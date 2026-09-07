@@ -176,6 +176,7 @@ class Fixture(unittest.TestCase):
         self.assertFalse((self.base/'state').exists())
 
     def test_timeout_does_not_resend_same_request(self):
+        self.store.accounts["GMAIL"]["kind"]="com.apple.account.Exchange"
         with patch.object(mail_sender,'process_start',return_value='fixture process'), patch.object(mail_sender.subprocess,'run',side_effect=subprocess.TimeoutExpired('osascript',.1)) as runner:
             result=mail_sender.send(self.store,self.args(dry_run=False),self.base/'state',self.base)
             again=mail_sender.send(self.store,self.args(dry_run=False),self.base/'state',self.base)
@@ -184,6 +185,7 @@ class Fixture(unittest.TestCase):
         self.assertEqual(runner.call_count,1)
 
     def test_idempotency_rejects_changed_content(self):
+        self.store.accounts["GMAIL"]["kind"]="com.apple.account.Exchange"
         with patch.object(mail_sender.subprocess,'run',side_effect=subprocess.TimeoutExpired('osascript',.1)):
             mail_sender.send(self.store,self.args(dry_run=False),self.base/'state',self.base)
         with self.assertRaises(MailError):

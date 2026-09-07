@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from configuration import state_path, migrate_legacy
+from configuration import state_path, config_path, migrate_legacy
 
 FILES = ['amail', 'cli.py', 'configuration.py', 'local_store.py', 'body_index.py',
          'mail_sender.py', 'gmail_backend.py', 'mail_operations.py', 'mail_operations.jxa',
@@ -62,7 +62,7 @@ def install(prefix, source=None):
         if temporary.is_symlink(): temporary.unlink()
     return {'installed': str(executable), 'release': str(release), 'backup': str(backup) if backup else None,
             'legacy_settings_migrated': migrated, 'state_directory': str(state_path()),
-            'next_step': 'amail doctor' if migrated else 'amail setup',
+            'next_step': 'amail doctor' if config_path(state_path()).exists() else 'amail setup',
             'system_mail': '/usr/bin/mail untouched'}
 
 
