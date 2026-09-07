@@ -1,0 +1,66 @@
+ObjC.import('Foundation');
+function mailboxPath(box, rootName) {
+    const names = [String(box.name())];
+    for (let depth = 0; depth < 32; depth++) {
+        let parent;
+        try { parent = box.container(); if (!parent) break; }
+        catch (e) { break; }
+        const name = String(parent.name());
+        if (name === rootName) return names.join('/');
+        names.unshift(name);
+        box = parent;
+    }
+    return names.join('/');
+}
+function findMailboxes(account, path) {
+    return account.mailboxes.whose({name:path.split('/').pop()})()
+        .filter(box => mailboxPath(box, String(account.name())) === path);
+}
+function run(argv) {
+    const raw = $.NSString.stringWithContentsOfFileEncodingError(argv[0], $.NSUTF8StringEncoding, null);
+    const q = JSON.parse(ObjC.unwrap(raw));
+    const M = Application('Mail');
+    const account = M.accounts.byId(q.account);
+    if (q.operation === 'doctor') {
+        return JSON.stringify({account: account.name(), enabled: account.enabled(), emails: account.emailAddresses(), automation_access: true});
+    }
+    if (q.operation === 'sync') {
+        M.checkForNewMail({for: account});
+        return JSON.stringify({state: 'refresh_requested', account: account.name()});
+    }
+    const boxes = findMailboxes(account, q.mailbox);
+    let message = null;
+    for (const box of boxes) {
+        const candidates = box.messages.whose({id: q.id})();
+        if (candidates.length) { message = candidates[0]; break; }
+    }
+    if (!message) throw new Error('Message is no longer in the expected mailbox');
+    if (String(message.subject()) !== q.subject) throw new Error('Message subject changed; refresh its ref');
+    const rawMessageId = String(message.messageId());
+    const actualId = rawMessageId.replace(/^<|>$/g, '');
+    if (q.message_id && actualId !== q.message_id.replace(/^<|>$/g, '')) throw new Error('Message identity changed; refresh its ref');
+    if (q.operation === 'identity') return JSON.stringify({message_id:actualId});
+    if (q.operation === 'source') return JSON.stringify({source: message.source(), message_id: actualId});
+    if (q.operation === 'attachments') return JSON.stringify(message.mailAttachments().map((a, i) => ({index:i, name:a.name(), downloaded:a.downloaded(), approximate_bytes:a.fileSize()})));
+    if (q.operation === 'save_attachment') {
+        const attachments = message.mailAttachments();
+        const attachment = attachments[q.index];
+        if (!attachment || String(attachment.name()) !== q.name) throw new Error('Attachment identity changed');
+        M.save(attachment, {in: Path(q.output)});
+        return JSON.stringify({file:q.output, downloaded:attachment.downloaded()});
+    }
+    if (q.operation === 'read') message.readStatus = true;
+    else if (q.operation === 'unread') message.readStatus = false;
+    else if (q.operation === 'flag') message.flaggedStatus = true;
+    else if (q.operation === 'unflag') message.flaggedStatus = false;
+    else if (q.operation === 'move') {
+        const destinations = findMailboxes(account, q.destination);
+        if (destinations.length !== 1) throw new Error('Destination is missing or ambiguous in Mail');
+        M.move(message, {to:destinations[0]});
+        const moved = destinations[0].messages.whose({messageId:rawMessageId})();
+        if (!moved.some(m => String(m.subject()) === q.subject)) throw new Error('Move requested, but Mail destination state could not be verified; refresh before retrying');
+        return JSON.stringify({state:'confirmed', destination:q.destination, message_id:actualId,
+            source:'Apple Mail', verification:'matching Message-ID and subject in destination mailbox'});
+    } else throw new Error('Unsupported mail operation');
+    return JSON.stringify({read:message.readStatus(), flagged:message.flaggedStatus(), message_id:actualId, source:'Apple Mail application state'});
+}

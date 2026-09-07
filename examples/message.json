@@ -1,0 +1,7 @@
+{
+  "from": "you@company.example",
+  "to": ["colleague@example.org"],
+  "subject": "Meeting notes",
+  "body": "Hello,\n\nHere are the notes we discussed.\n",
+  "attachments": []
+}

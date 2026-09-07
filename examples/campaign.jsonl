@@ -1,0 +1,2 @@
+{"id":"alice-001","from":"you@company.example","to":["alice@example.org"],"subject":"Following our discussion","body":"Hi Alice,\n\nA complete message written specifically for Alice.\n"}
+{"id":"bob-001","from":"you@company.example","to":["bob@example.net"],"subject":"Your research question","body":"Hi Bob,\n\nA complete message written specifically for Bob.\n"}
