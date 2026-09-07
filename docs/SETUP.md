@@ -12,6 +12,17 @@ Gather these permissions and any required Google sign-ins before a long agent ta
 
 ## Install and choose accounts
 
+With Homebrew:
+
+```sh
+brew install philippbogdan/tap/amail
+amail setup
+```
+
+This downloads a checksummed release from the project's third-party tap. Homebrew manages the CLI and its Python runtime. It does not create accounts, collect credentials, send mail or modify your existing amail state. If Homebrew requests trust, grant it only to this formula. For a manual tap installation, use `brew tap philippbogdan/tap`, then `brew trust --formula philippbogdan/tap/amail` if required by your Homebrew version.
+
+Alternatively, install from source:
+
 ```sh
 git clone https://github.com/philippbogdan/amail.git
 cd amail
@@ -98,7 +109,16 @@ This is a configuration example, not a recommended volume for your account. Prov
 
 ## Upgrade and state
 
-Run `git pull --ff-only` in a clean checkout, inspect changes as appropriate, then `python3 install.py`. The installer preserves the existing config, send ledger, drafts, snapshots, OAuth cache and gog credentials. It never resets your history.
+For a Homebrew installation:
+
+```sh
+brew update
+brew upgrade philippbogdan/tap/amail
+```
+
+Check `command -v amail` if you also installed from source: the earlier launcher in your PATH may still take precedence. Both versions share the same private config and ledger. Keep one installation method as your normal command. Removing a launcher or uninstalling the Homebrew formula does not require deleting account settings or credentials.
+
+For source installations, run `git pull --ff-only` in a clean checkout, inspect changes as appropriate, then `python3 install.py`. The installer preserves the existing config, send ledger, drafts, snapshots, OAuth cache and gog credentials. It never resets your history.
 
 For the earlier account-specific amail release, the installer detects the old installed `accounts.json`, reads its display-name default and policy constants as data, and writes those settings into the new private config. It does not execute the old code or include those settings in a release directory. Later upgrades keep the private config. The earlier named `amail` Gmail client continues to work.
 

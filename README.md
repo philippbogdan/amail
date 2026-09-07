@@ -18,6 +18,17 @@ For agents that load skills, the repository includes [skills/amail/SKILL.md](ski
 
 You need macOS, Python 3.10 or newer, and the selected accounts already signed into Apple Mail. The terminal or agent host needs Full Disk Access. Mail scripting also requires Automation permission. Gmail's API route needs your own Google OAuth client and [gog](https://github.com/openclaw/gogcli).
 
+Install from the project's Homebrew tap:
+
+```sh
+brew install philippbogdan/tap/amail
+amail setup
+```
+
+The formula installs an isolated Python runtime and the CLI. Gmail's optional OAuth helper, gog, is configured separately. This is a third-party tap, not a listing in Homebrew core. See [the tap](https://github.com/philippbogdan/homebrew-tap) for package updates and tests.
+
+Or install directly from source:
+
 ```sh
 git clone https://github.com/philippbogdan/amail.git
 cd amail
@@ -50,7 +61,7 @@ amail attachments REF
 amail search 'project' --from colleague@example.org
 ```
 
-Use a `ref` returned by amail. JSON is the default; `--plain` and `--tsv` are also available. Installation uses `~/.local/bin/amail`, preserves prior amail settings and state, and leaves `/usr/bin/mail` alone. No sudo is required.
+Use a `ref` returned by amail. JSON is the default; `--plain` and `--tsv` are also available. Source installation uses `~/.local/bin/amail`; Homebrew uses its own prefix. Both read the same private configuration and leave `/usr/bin/mail` alone. No sudo is required.
 
 ## What it does
 
