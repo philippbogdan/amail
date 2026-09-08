@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1
+
+- Restrict field projection to reading commands so output-field errors cannot obscure a completed send or mailbox change.
+- Render list/search plain and TSV output as rows, retaining scope metadata on stderr; support multiple body-only reads in text output.
+
 ## 0.2.0
 
 - List/search now return explicit scope, count and pagination metadata. Use `--bare` for the old bare-array contract; `--page` remains accepted.

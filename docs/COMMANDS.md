@@ -1,6 +1,6 @@
 # Command reference
 
-Run `amail --help` or append `--help` to any command. JSON is the default. `--json`, `--plain` and `--tsv` work before or after subcommands. `amail --version` prints the release version. `--fields ref,subject` selects output fields; list/search retain their scope envelope.
+Run `amail --help` or append `--help` to any command. JSON is the default. `--json`, `--plain` and `--tsv` work before or after subcommands. `amail --version` prints the release version. `--fields ref,subject` selects message fields on list, search, read and thread. It is intentionally unavailable on sending and other write commands, so a field-name error cannot obscure an action result. List/search retain their scope envelope. With --plain or --tsv, message rows go to stdout and the scope/pagination metadata goes to stderr.
 
 ## Read, search and refresh
 

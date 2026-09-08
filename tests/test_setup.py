@@ -108,7 +108,7 @@ class SetupTests(unittest.TestCase):
             self.assertFalse(result['legacy_settings_migrated'])
             self.assertFalse((state/'config.json').exists())
             command=prefix/'bin/amail';p=subprocess.run([str(command),'--version'],capture_output=True,text=True,timeout=10)
-            self.assertEqual(p.returncode,0);self.assertIn('0.2.0',p.stdout)
+            self.assertEqual(p.returncode,0);self.assertIn('0.2.1',p.stdout)
             p=subprocess.run([str(command),'accounts'],capture_output=True,text=True,timeout=10)
             self.assertNotEqual(p.returncode,0);self.assertIn('amail setup',p.stderr)
             save({'accounts':['owner@example.com'],'display_name':'Existing Name'},state)

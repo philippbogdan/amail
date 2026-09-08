@@ -16,12 +16,11 @@ HERE = Path(__file__).resolve().parent
 
 def parser():
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--fields", default=argparse.SUPPRESS, help="Comma-separated result fields; selects message fields inside list/search envelopes")
     style = common.add_mutually_exclusive_group()
     for flag in ("json", "plain", "tsv"):
         style.add_argument("--" + flag, action="store_true", default=argparse.SUPPRESS)
     p = argparse.ArgumentParser(prog="amail", description="Fast email reads and verified, paced sending.", parents=[common])
-    p.add_argument("--version", action="version", version="amail 0.2.0")
+    p.add_argument("--version", action="version", version="amail 0.2.1")
     sub = p.add_subparsers(dest="command", required=True)
     descriptions = {
         "accounts": "List enabled accounts; --available discovers accounts without enabling them",
@@ -60,7 +59,10 @@ def parser():
     def command(name, **kwargs):
         kwargs.setdefault("help", descriptions.get(name))
         kwargs.setdefault("description", descriptions.get(name))
-        return sub.add_parser(name, parents=[common], formatter_class=argparse.ArgumentDefaultsHelpFormatter, **kwargs)
+        result = sub.add_parser(name, parents=[common], formatter_class=argparse.ArgumentDefaultsHelpFormatter, **kwargs)
+        if name in {"list", "search", "read", "thread"}:
+            result.add_argument("--fields", help="Comma-separated message fields; list/search retain scope metadata")
+        return result
     bulk = command("mark-bulk", help="Preview and apply a frozen bulk read/unread selection", description="Plan selects existing cached messages only. Review the scope, then apply the returned ID. Later arrivals are excluded.")
     operations = bulk.add_subparsers(dest="action", required=True)
     q = operations.add_parser("plan", parents=[common], description="Create a preview without changing messages")
@@ -400,9 +402,12 @@ def output(value, args):
     if getattr(args, "fields", None): value = project(value, args.fields)
     if isinstance(value, str): print(value); return
     if getattr(args, "tsv", False) or getattr(args, "plain", False):
+        if isinstance(value, dict) and "messages" in value:
+            print(json.dumps({k: v for k, v in value.items() if k != "messages"}, ensure_ascii=False), file=sys.stderr)
+            value = value["messages"]
         if isinstance(value, list):
             for row in value:
-                print("\t".join(str(v).replace("\t", " ").replace("\n", " ") for v in row.values()))
+                print("\t".join(str(v).replace("\t", " ").replace("\n", " ") for v in (row.values() if isinstance(row, dict) else [row])))
         elif isinstance(value, dict):
             for key, item in value.items(): print(f"{key}: {item}")
     else: print(json.dumps(value, ensure_ascii=False, indent=2))
