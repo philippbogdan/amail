@@ -168,3 +168,27 @@ assert.deepEqual(marks,[1]);
         self.assertEqual(len(results), 2)
         self.assertIn('Needleword', results[1]['body'])
         with self.assertRaises(MailError): self.execute('read', ref, 'invalid')
+
+    def test_projection_cannot_hide_an_outbound_result(self):
+        import contextlib
+        import io
+        from cli import main
+        argv = ['amail', 'send', '--from', 'owner@example.com', '--to', 'recipient@example.net', '--subject', 'Hi', '--body', 'Body', '--fields', 'typo']
+        with patch('sys.argv', argv), patch('configuration.load', side_effect=AssertionError('must reject before account access')), contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as result: main()
+        self.assertEqual(result.exception.code, 2)
+
+    def test_tsv_preserves_rows_and_scope_separately(self):
+        import contextlib
+        import io
+        from cli import output
+        args = parser().parse_args(['list', '--fields', 'ref,subject', '--tsv'])
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            output(run(args, self.store, self.base/'state'), args)
+        self.assertTrue(stdout.getvalue().startswith('mail:'))
+        self.assertEqual(json.loads(stderr.getvalue())['scope']['mailbox'], 'inbox')
+        stdout = io.StringIO()
+        args = parser().parse_args(['read', 'one', 'two', '--body-only', '--plain'])
+        with contextlib.redirect_stdout(stdout): output(['first', 'second'], args)
+        self.assertEqual(stdout.getvalue(), 'first\nsecond\n')
