@@ -61,7 +61,7 @@ amail attachments REF
 amail search 'project' --from colleague@example.org
 ```
 
-Use a `ref` returned by amail. JSON is the default; `--plain` and `--tsv` are also available. Source installation uses `~/.local/bin/amail`; Homebrew uses its own prefix. Both read the same private configuration and leave `/usr/bin/mail` alone. No sudo is required.
+Use a `ref` returned by amail. JSON is the default; `--plain` and `--tsv` are also available. List/search return messages with explicit mailbox scope and pagination; `--bare` preserves the earlier array format. Use `--all-mailboxes` for checks beyond Inbox, `thread REF --full` for conversation bodies, and `schema batch` for self-contained manifest guidance. Source installation uses `~/.local/bin/amail`; Homebrew uses its own prefix. Both read the same private configuration and leave `/usr/bin/mail` alone. No sudo is required.
 
 ## What it does
 
@@ -70,7 +70,7 @@ Use a `ref` returned by amail. JSON is the default; `--plain` and `--tsv` are al
 | Setup and diagnostics | `setup`, `accounts`, `config`, `connect`, `doctor`, `mailboxes` |
 | Read and search | `list`, `unread`, `read`, `thread`, `search`, `attachments`, `index`, `sync` |
 | Compose and conversations | `draft create/show/update/list/discard/send`, `send`, `reply`, `forward` |
-| Mailbox changes | `mark`, `flag`, `move`, `archive`, `trash`, `restore` |
+| Mailbox changes | `mark`, `mark-bulk plan/show/apply`, `flag`, `move`, `archive`, `trash`, `restore` |
 | Reviewed batches | `batch plan/show/run/status/pause/resume/cancel/export` |
 | History and policy | `sent`, `status`, `limits`, `policy`, `suppress` |
 

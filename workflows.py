@@ -45,8 +45,11 @@ def freeze_attachment(path, state):
 
 def normalise(item, base, state, store, *, require_id=False):
     allowed = {"id", "from", "to", "cc", "bcc", "subject", "body", "body_file", "attachments", "reply_to_ref", "name"}
-    if not isinstance(item, dict) or set(item) - allowed:
-        raise MailError("Message contains unsupported fields")
+    if not isinstance(item, dict):
+        raise MailError("Message must be a JSON object; see amail schema message")
+    unknown = set(item) - allowed
+    if unknown:
+        raise MailError("Unsupported message fields: " + ", ".join(sorted(unknown)) + "; see amail schema message")
     if require_id and (not isinstance(item.get("id"), str) or not item["id"].strip()):
         raise MailError("Every batch item needs a non-empty string id")
     if not isinstance(item.get("from"),str) or not isinstance(item.get("name",getattr(store,"display_name","")),str):
@@ -130,7 +133,7 @@ def batch_plan(store, state, filename):
             continue
         try:
             message = normalise(json.loads(line), path.parent, state, store, require_id=True)
-        except (ValueError, KeyError, TypeError) as e:
+        except (MailError, OSError, ValueError, KeyError, TypeError) as e:
             raise MailError(f"Invalid batch item on line {number}: {e}") from e
         if message["id"] in ids:
             raise MailError("Duplicate batch item ID: " + message["id"])
@@ -289,3 +292,72 @@ def batch_run(store, state, here, batch_id, *, resume=False, sender=send, clock=
             batch_control(state, batch_id, "pause")
             raise
     return batch_show(state, batch_id, include_messages=False)
+
+
+def input_schema(kind):
+    """Account-independent description of the exact accepted manifest contract."""
+    properties = {
+        "id": {"type": "string", "minLength": 1, "description": "Stable logical item ID; required for batches; keep across replanning to prevent duplicate sends"},
+        "from": {"type": "string", "description": "An enabled sender email address"},
+        "to": {"type": "array", "items": {"type": "string"}},
+        "cc": {"type": "array", "items": {"type": "string"}, "default": []},
+        "bcc": {"type": "array", "items": {"type": "string"}, "default": []},
+        "subject": {"type": "string"},
+        "body": {"type": "string", "description": "Complete plain-text body, including greeting and signature"},
+        "body_file": {"type": "string", "description": "UTF-8 text file, relative to the manifest directory"},
+        "attachments": {"type": "array", "items": {"type": "string"}, "default": [], "description": "File paths relative to the manifest directory; bytes are frozen at planning time"},
+        "reply_to_ref": {"type": "string", "description": "Original amail ref for a threaded reply"},
+        "name": {"type": "string", "description": "Sender display name; defaults to private configuration"},
+    }
+    required = ["from", "subject"]
+    example = {"from": "you@company.example", "to": ["colleague@example.org"], "subject": "Meeting notes", "body": "Hello,\n\nHere are the notes we discussed.\n"}
+    if kind == "batch":
+        required += ["id", "to"]
+        properties["to"].update(minItems=1, maxItems=1)
+        example = {"id": "colleague-001", **example}
+    schema = {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": False,
+              "properties": properties, "required": required,
+              "oneOf": [{"required": ["body"], "not": {"required": ["body_file"]}},
+                        {"required": ["body_file"], "not": {"required": ["body"]}}]}
+    return {"format": "JSONL: one object per non-empty line" if kind == "batch" else "JSON object",
+            "schema": schema, "example": example,
+            "constraints": ["Addresses and enabled sender are validated by amail; at least one recipient is required.",
+                            "Exactly one of body and body_file is required.",
+                            "Obtain human approval of recipients, subject, body and attachments before sending."] +
+                           (["1 to 10000 messages; unique IDs and unique To recipients except explicit threaded replies.",
+                             "Planning freezes content and policy but does not send. Review with batch show; batch run sends in the foreground.",
+                             "Monitor with batch status; use --details for item evidence. Resume preserves request IDs and never retries ambiguous sends."] if kind == "batch" else [])}
+
+
+def batch_summary(state, batch_id):
+    """Compact monitoring result; retain full evidence in batch status --details."""
+    plan = batch_show(state, batch_id, include_messages=False)
+    now = time.time()
+    waits = []
+    exceptions = []
+    for item in plan["items"]:
+        result = item["result"] or {}
+        if item["state"] == "pending" and result.get("waiting_until", 0) > now:
+            waits.append({"item": item["item"], "until": result["waiting_until"], "reason": result.get("reason")})
+        elif item["state"] not in {"pending", "accepted", "cancelled"}:
+            exceptions.append({"item": item["item"], "state": item["state"],
+                               **{key: result[key] for key in ("reason", "error", "suppressed") if key in result}})
+    worker_running = False
+    try:
+        fd = os.open(state / (batch_id + ".lock"), os.O_RDONLY)
+    except FileNotFoundError:
+        pass
+    else:
+        with os.fdopen(fd) as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                worker_running = True
+    next_wait = min(waits, key=lambda value: value["until"]) if waits else None
+    return {"id": plan["id"], "state": plan["state"], "counts": plan["counts"],
+            "worker_running": worker_running, "waiting": waits,
+            "next_retry_at": next_wait["until"] if next_wait and worker_running else None,
+            "wait_seconds": max(0, round(next_wait["until"] - now, 1)) if next_wait and worker_running else None,
+            "exceptions": exceptions,
+            "next_step": "Worker is absent; inspect send outcomes before resuming with amail batch resume " + batch_id
+                         if plan["state"] == "running" and not worker_running else None}

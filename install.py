@@ -13,7 +13,7 @@ from configuration import state_path, config_path, migrate_legacy
 
 FILES = ['amail', 'cli.py', 'configuration.py', 'local_store.py', 'body_index.py',
          'mail_sender.py', 'gmail_backend.py', 'mail_operations.py', 'mail_operations.jxa',
-         'send.applescript', 'workflows.py', 'policy.py', 'feedback.py', 'usage.py',
+         'send.applescript', 'bulk_mark.py', 'workflows.py', 'policy.py', 'feedback.py', 'usage.py',
          'README.md', 'LICENSE', 'CONTRIBUTING.md', 'SECURITY.md', 'CHANGELOG.md',
          'docs/SETUP.md', 'docs/COMMANDS.md', 'docs/VALIDATION.md', 'skills/amail/SKILL.md']
 

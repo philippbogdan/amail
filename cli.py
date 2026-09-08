@@ -16,13 +16,62 @@ HERE = Path(__file__).resolve().parent
 
 def parser():
     common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--fields", default=argparse.SUPPRESS, help="Comma-separated result fields; selects message fields inside list/search envelopes")
     style = common.add_mutually_exclusive_group()
     for flag in ("json", "plain", "tsv"):
         style.add_argument("--" + flag, action="store_true", default=argparse.SUPPRESS)
     p = argparse.ArgumentParser(prog="amail", description="Fast email reads and verified, paced sending.", parents=[common])
-    p.add_argument("--version", action="version", version="amail 0.1.0")
+    p.add_argument("--version", action="version", version="amail 0.2.0")
     sub = p.add_subparsers(dest="command", required=True)
-    def command(name, **kwargs): return sub.add_parser(name, parents=[common], **kwargs)
+    descriptions = {
+        "accounts": "List enabled accounts; --available discovers accounts without enabling them",
+        "setup": "Discover accounts, or explicitly select accounts and configure access",
+        "mailboxes": "List mailbox names and full paths for an account",
+        "unread": "Count locally cached unread Inbox messages per account",
+        "doctor": "Check local cache, authentication and Mail automation without sending",
+        "sync": "Request a Mail refresh; completion does not guarantee a complete server cache",
+        "limits": "Show shared sending budgets, pacing and observed restrictions",
+        "connect": "Explicitly authorise an enabled account",
+        "list": "List cached messages, newest first (default: Inbox in all enabled accounts)",
+        "search": "Search cached headers (default: all mailboxes); query is optional with filters",
+        "read": "Read a message and body without marking it read; --fetch requests server content",
+        "thread": "List thread metadata; --full includes every available message body",
+        "attachments": "List attachments, or save them with --out DIRECTORY",
+        "send": "Preview with --dry-run; send approved content with a stable --request-id",
+        "status": "Show send request status, or account diagnostics when no request ID is given",
+        "send-status": "Look up one send request; never resend an unknown outcome",
+        "sent": "Show local send history and acceptance evidence",
+        "ledger": "Alias for sent: local send history and acceptance evidence",
+        "mark": "Set one message read or unread",
+        "flag": "Set or clear a message flag",
+        "move": "Move a message to a mailbox",
+        "archive": "Archive one message",
+        "trash": "Move one message to Trash",
+        "delete": "Alias for trash; does not permanently delete",
+        "restore": "Restore a trashed message using recorded mailbox history",
+        "reply": "Create a reply draft; --send submits it immediately",
+        "forward": "Create a forward draft including attachments; --send submits it immediately",
+        "draft": "Create, review and send local drafts (JSON input: amail schema message)",
+        "batch": "Plan and run reviewed outreach (JSONL input: amail schema batch)",
+        "policy": "Inspect pacing profiles or explicitly release a reviewed account hold",
+        "suppress": "Manage addresses excluded from outreach",
+        "schema": "Show portable input schemas and complete examples without account access",
+    }
+    def command(name, **kwargs):
+        kwargs.setdefault("help", descriptions.get(name))
+        kwargs.setdefault("description", descriptions.get(name))
+        return sub.add_parser(name, parents=[common], formatter_class=argparse.ArgumentDefaultsHelpFormatter, **kwargs)
+    bulk = command("mark-bulk", help="Preview and apply a frozen bulk read/unread selection", description="Plan selects existing cached messages only. Review the scope, then apply the returned ID. Later arrivals are excluded.")
+    operations = bulk.add_subparsers(dest="action", required=True)
+    q = operations.add_parser("plan", parents=[common], description="Create a preview without changing messages")
+    q.add_argument("--account", required=True, help="One enabled account address or UUID")
+    q.add_argument("--mailbox", required=True, help="Explicit mailbox path or '*' for all mailboxes")
+    q.add_argument("--state", choices=["read", "unread"], default="read")
+    q.add_argument("--before", help="Exclusive ISO date/time cutoff; defaults to the preview time")
+    for name in ("show", "apply"):
+        q = operations.add_parser(name, parents=[common]); q.add_argument("id")
+        if name == "show": q.add_argument("--details", action="store_true")
+    schema = command("schema"); schema.add_argument("kind", choices=["message", "batch"])
     account_list = command("accounts"); account_list.add_argument("--available", action="store_true")
     setup = command("setup"); setup.add_argument("--accounts", nargs="+"); setup.add_argument("--name")
     setup.add_argument("--gmail-client-json"); setup.add_argument("--connect", action="store_true")
@@ -35,9 +84,12 @@ def parser():
     for name in ("list", "search"):
         q = command(name)
         if name == "search":
-            q.add_argument("query"); q.add_argument("--body", action="store_true")
+            q.add_argument("query", nargs="?", default="", help="Text in subject or sender; omit for field-only filters"); q.add_argument("--body", action="store_true", help="Search the decoded body index; refresh first with amail index")
         q.add_argument("--account", default="*")
-        q.add_argument("--mailbox", default="inbox" if name == "list" else "*")
+        scope = q.add_mutually_exclusive_group()
+        scope.add_argument("--mailbox", default="inbox" if name == "list" else "*", help="Mailbox name or full path; '*' means all mailboxes")
+        scope.add_argument("--all-mailboxes", dest="mailbox", action="store_const", const="*", help="Include every mailbox in the selected accounts")
+        q.add_argument("--bare", action="store_true", help="Return the legacy bare message array, omitting scope and pagination metadata")
         q.add_argument("--limit", type=int, default=20)
         q.add_argument("--sender", "--from", dest="sender")
         q.add_argument("--to", dest="recipient")
@@ -46,8 +98,8 @@ def parser():
         q.add_argument("--since-hours", type=float, default=0)
         q.add_argument("--after"); q.add_argument("--before")
         q.add_argument("--cursor"); q.add_argument("--page", action="store_true")
-    read = command("read"); read.add_argument("ref"); read.add_argument("--body-only", action="store_true"); read.add_argument("--fetch", action="store_true")
-    thread = command("thread"); thread.add_argument("ref")
+    read = command("read"); read.add_argument("ref", nargs="+", help="One or more refs; multiple refs return a list"); read.add_argument("--body-only", action="store_true"); read.add_argument("--fetch", action="store_true")
+    thread = command("thread"); thread.add_argument("ref"); thread.add_argument("--full", action="store_true", help="Include bodies in one call; missing cached bodies remain explicit"); thread.add_argument("--fetch", action="store_true", help="Fetch bodies from the server (implies --full)")
     att = command("attachments"); att.add_argument("ref"); att.add_argument("--out"); att.add_argument("--fetch", action="store_true")
     command("index", help="Refresh the decoded body search snapshot")
     send = command("send")
@@ -63,7 +115,7 @@ def parser():
     send.add_argument("--purpose", choices=["personal", "outreach"], default="personal")
     send.add_argument("--retry-rejected", action="store_true", help="Explicitly retry a definitively rejected request; never an ambiguous one")
     for name in ("status", "send-status"):
-        status = command(name); status.add_argument("request_id")
+        status = command(name); status.add_argument("request_id", **({"nargs": "?"} if name == "status" else {}))
     for name in ("sent", "ledger"):
         q = command(name); q.add_argument("--account", default="*"); q.add_argument("--hours", type=float, default=24)
     for name in ("mark", "flag", "move", "archive", "trash", "delete", "restore"):
@@ -85,10 +137,19 @@ def parser():
         if name == "send": q.add_argument("--dry-run", action="store_true")
     batch = command("batch"); bs = batch.add_subparsers(dest="action", required=True)
     for name in ("plan", "show", "run", "status", "pause", "resume", "cancel", "export"):
-        q = bs.add_parser(name, parents=[common])
+        description = {"plan": "Freeze a JSONL manifest without sending; use amail schema batch for the complete input contract",
+                       "show": "Show all frozen messages, policy and estimated schedule for review",
+                       "run": "Send the approved plan in the foreground; monitor from another process with batch status",
+                       "status": "Compact counts, live worker presence, recorded waits and exceptions; --details includes every item",
+                       "pause": "Pause the active worker after its current operation",
+                       "resume": "Resume the existing plan with the same request IDs; ambiguous outcomes are never resent",
+                       "cancel": "Cancel pending work; already submitted messages remain sent",
+                       "export": "Write full plan and item evidence to a new JSON file"}[name]
+        q = bs.add_parser(name, parents=[common], help=description, description=description)
         if name == "plan":
-            q.add_argument("file"); q.add_argument("--policy", choices=["outreach"], default="outreach")
+            q.add_argument("file", help="JSONL: one complete message per line with a stable id. Run amail schema batch for fields and an example."); q.add_argument("--policy", choices=["outreach"], default="outreach")
         else: q.add_argument("id")
+        if name == "status": q.add_argument("--details", action="store_true", help="Include every item and its provider result")
         if name == "export": q.add_argument("--out", required=True)
     policy = command("policy"); ps = policy.add_subparsers(dest="action", required=True)
     q = ps.add_parser("show", parents=[common]); q.add_argument("name", nargs="?", default="outreach", choices=["outreach", "gmail", "exchange", "imperial"])
@@ -143,6 +204,13 @@ def conversation_draft(args, store, state, here):
 
 def run(args, store, state, here=HERE):
     command = args.command
+    if command == "status" and args.request_id is None:
+        return run(argparse.Namespace(command="doctor", account="*"), store, state, here)
+    if command == "mark-bulk":
+        import bulk_mark
+        if args.action == "plan": return bulk_mark.plan(store, state, args.account, args.mailbox, args.state, args.before)
+        if args.action == "show": return bulk_mark.show(state, args.id, args.details)
+        return bulk_mark.apply(store, state, here, args.id)
     if command == "accounts":
         result = []
         with store.connect() as c:
@@ -158,7 +226,7 @@ def run(args, store, state, here=HERE):
     if command in {"list", "search"}:
         fields = ("account", "mailbox", "limit", "sender", "recipient", "subject", "unread", "since_hours", "after", "before", "cursor")
         kwargs = {key: getattr(args, key) for key in fields}
-        page = args.page or args.cursor is not None
+        page = not args.bare or args.page or args.cursor is not None
         if page:
             if not 1 <= args.limit <= 10000: raise MailError("Page size must be between 1 and 10000")
             kwargs["limit"] += 1
@@ -174,11 +242,22 @@ def run(args, store, state, here=HERE):
         messages = [store.item(r) for r in rows]
         if page or index:
             return {"messages": messages, "next_cursor": store.cursor(rows[-1]) if more else None,
+                    "scope": {"accounts": [a["name"] for a in store.resolve(args.account)], "mailbox": args.mailbox},
+                    "count": len(messages), "has_more": bool(more),
                     "source": "local cache", "queried_at": time.time(), **({"index": index} if index else {})}
         return messages
     if command == "thread":
         from mail_operations import thread
-        return thread(store,args.ref,state,here)
+        messages = thread(store,args.ref,state,here)
+        if args.full or args.fetch:
+            from mail_operations import load_message
+            return [load_message(store, item["ref"], state, here, fetch=args.fetch)[0] for item in messages]
+        return messages
+    if command == "read" and isinstance(args.ref, list):
+        if len(args.ref) == 1:
+            args = argparse.Namespace(**{**vars(args), "ref": args.ref[0]})
+        else:
+            return [run(argparse.Namespace(**{**vars(args), "ref": ref}), store, state, here) for ref in args.ref]
     if command in {"read", "attachments"}:
         if args.fetch or args.ref.startswith("gmail:"):
             from mail_operations import load_message, fetch_attachments
@@ -229,6 +308,9 @@ def run(args, store, state, here=HERE):
     if command == "batch":
         from workflows import batch_plan, batch_show, batch_run, batch_control
         if args.action == "plan": return batch_plan(store, state, args.file)
+        if args.action == "status" and not args.details:
+            from workflows import batch_summary
+            return batch_summary(state, args.id)
         if args.action in {"show", "status"}: return batch_show(state, args.id, include_messages=args.action == "show")
         if args.action in {"run", "resume"}: return batch_run(store, state, here, args.id, resume=args.action == "resume")
         if args.action in {"pause", "cancel"}: return batch_control(state, args.id, args.action)
@@ -301,7 +383,21 @@ def run(args, store, state, here=HERE):
     raise MailError("Unsupported command")
 
 
+def project(value, fields):
+    keys = [key.strip() for key in fields.split(",") if key.strip()]
+    if not keys: raise MailError("--fields needs at least one field name")
+    if isinstance(value, dict) and "messages" in value:
+        return {**value, "messages": project(value["messages"], fields)}
+    if isinstance(value, list):
+        return [project(row, fields) for row in value]
+    if not isinstance(value, dict): raise MailError("--fields requires structured output")
+    unknown = set(keys) - set(value)
+    if unknown: raise MailError("Unknown output fields: " + ", ".join(sorted(unknown)))
+    return {key: value[key] for key in keys}
+
+
 def output(value, args):
+    if getattr(args, "fields", None): value = project(value, args.fields)
     if isinstance(value, str): print(value); return
     if getattr(args, "tsv", False) or getattr(args, "plain", False):
         if isinstance(value, list):
@@ -317,6 +413,10 @@ def main():
     from configuration import state_path, config_path, load, apply, setup
     state = state_path()
     try:
+        if args.command == "schema":
+            from workflows import input_schema
+            output(input_schema(args.kind), args)
+            return 0
         if args.command == "setup":
             result = setup(args, state)
             if args.connect:
@@ -337,6 +437,8 @@ def main():
         if args.command == "send" and args.name is None: args.name = config["display_name"]
         result = run(args, store, state)
         output(result, args)
+        if args.command == "mark-bulk" and args.action == "apply" and result.get("remaining"):
+            return 1
         if isinstance(result, dict) and (result.get("state") in {"outcome_unknown", "rejected", "provider_acceptance_unverified"}
                 or result.get("state") == "paused" and args.command == "batch" and args.action in {"run", "resume"}):
             return 2
