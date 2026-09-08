@@ -28,6 +28,25 @@ function run(argv) {
         M.checkForNewMail({for: account});
         return JSON.stringify({state: 'refresh_requested', account: account.name()});
     }
+    if (q.operation === 'mark_many') {
+        if (!['read', 'unread'].includes(q.target) || !Array.isArray(q.messages) || q.messages.length > 20) throw new Error('Invalid bounded mark request');
+        const boxesByPath = {};
+        const results = q.messages.map(item => {
+            try {
+                const boxes = boxesByPath[item.mailbox] || (boxesByPath[item.mailbox] = findMailboxes(account, item.mailbox));
+                const candidates = boxes.flatMap(box => box.messages.whose({id:item.id})());
+                if (candidates.length !== 1) throw new Error('Message is missing or ambiguous in its preview mailbox');
+                const message = candidates[0];
+                if (String(message.subject()) !== item.subject) throw new Error('Message subject changed since preview');
+                const actualId = String(message.messageId()).replace(/^<|>$/g, '');
+                if (!item.message_id || actualId !== item.message_id.replace(/^<|>$/g, '')) throw new Error('Message identity unavailable or changed since preview');
+                message.readStatus = q.target === 'read';
+                if (Boolean(message.readStatus()) !== (q.target === 'read')) throw new Error('Mail read status did not change');
+                return {state:'confirmed', source:'Apple Mail application state', provider_sync:'pending'};
+            } catch (e) { return {state:'failed', error:String(e)}; }
+        });
+        return JSON.stringify({results:results});
+    }
     const boxes = findMailboxes(account, q.mailbox);
     let message = null;
     for (const box of boxes) {

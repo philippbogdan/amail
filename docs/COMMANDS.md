@@ -1,6 +1,6 @@
 # Command reference
 
-Run `amail --help` or append `--help` to any command. JSON is the default. `--json`, `--plain` and `--tsv` work before or after subcommands. `amail --version` prints the release version.
+Run `amail --help` or append `--help` to any command. JSON is the default. `--json`, `--plain` and `--tsv` work before or after subcommands. `amail --version` prints the release version. `--fields ref,subject` selects output fields; list/search retain their scope envelope.
 
 ## Read, search and refresh
 
@@ -18,13 +18,18 @@ amail search 'literal phrase' --to person@example.org --after 2026-01-01 --befor
 amail read REF
 amail read REF --body-only
 amail read REF --fetch
-amail thread REF
+amail thread REF --full
+amail read REF1 REF2 REF3
+amail search --to person@example.org
+amail list --all-mailboxes --fields ref,subject
 amail attachments REF
 amail attachments REF --out ./attachments --fetch
 amail sync --account you@gmail.com
 amail index
 amail search 'decoded body phrase' --body
 ```
+
+List defaults to Inbox across enabled accounts; search defaults to all mailboxes. Both return an object with `messages`, `scope`, `count`, `has_more` and `next_cursor`. Use `--all-mailboxes` for a wider check. `--bare` restores the pre-0.2 bare array for existing scripts. The default page size is 20; use up to 10000 and follow cursors for larger results. Text search matches subject and sender, while `--to` filters To recipients.
 
 List and search also support `--subject`, `--unread`, `--since-hours`, `--mailbox` and `--limit`. `--from` is an alias for `--sender`. Date filters use ISO dates or timestamps. Pagination returns `next_cursor`; reuse the same filters on subsequent pages.
 
@@ -36,7 +41,7 @@ Reads do not mark a message read. Unavailable bodies and attachments are explici
 
 ## Draft and send
 
-A message file uses this schema:
+Run `amail schema message` or `amail schema batch` for the full machine-readable input schema, constraints and a complete example. These commands work before setup and never need account access. A message file uses this schema:
 
 ```json
 {
@@ -99,6 +104,16 @@ amail restore REF
 
 Gmail reports server labels. The Mail route checks application state and separately labels pending provider synchronisation. `delete` is a compatibility alias for trash. No permanent purge command is included. Restore uses the saved pre-trash state when available; otherwise it returns to Inbox.
 
+For a bulk read/unread operation, preview an explicit scope first:
+
+```sh
+amail mark-bulk plan --account you@company.example --mailbox inbox --state read
+amail mark-bulk show MARK_ID --details
+amail mark-bulk apply MARK_ID
+```
+
+The preview freezes exact locally cached refs and an exclusive time cutoff (default: now; override with `--before ISO_TIMESTAMP`). Only messages needing the requested state are selected. New arrivals are excluded even if they carry older dates. Apply validates identities and uses bounded provider/Mail operations. Its compact result reports confirmed items and exceptions; reapplying skips confirmed items. A remaining failure produces exit code 1. Gmail confirmation means the API accepted the label change; Exchange confirmation is Mail application state with server sync pending. Preview does not change mail. Use `--mailbox '*'` explicitly for all cached folders. Missing cache content cannot establish complete server coverage.
+
 ## Batches
 
 A JSONL manifest contains one complete individual message per line. Include a stable `id` for every item:
@@ -120,7 +135,9 @@ amail batch cancel PLAN_ID
 amail batch export PLAN_ID --out result.json
 ```
 
-One To recipient per outreach item is the default. CC/BCC also consume recipient budget. Planning snapshots attachments and bodies, rejects duplicate IDs and contact attempts, and reports suppressed recipients and timing assumptions. A changed plan requires a new review. Stable logical item IDs prevent accepted unchanged items from being sent again in another plan.
+`batch status` returns compact counts, actual worker lock presence, recorded future waits and exceptions. `next_retry_at` is the earliest recorded wait expiry when a worker is present, not a guarantee that provider restrictions have cleared. Use `batch status PLAN_ID --details` for full item results; `batch show` includes the reviewed messages.
+
+Exactly one To recipient per outreach item is required. CC/BCC also consume recipient budget. Planning snapshots attachments and bodies, rejects duplicate IDs and contact attempts, and reports suppressed recipients and timing assumptions. A changed plan requires a new review. Stable logical item IDs prevent accepted unchanged items from being sent again in another plan.
 
 The worker runs in the foreground. Pause it from another terminal or with Ctrl-C. Pending items survive restart. An unresolved submission pauses that account; resuming cannot blindly resend it. Other ready accounts can progress during normal rate waits, but amail never changes a blocked item's sending account. Cancelling affects unsent work, not messages already submitted.
 
@@ -138,7 +155,7 @@ amail suppress remove person@example.org
 amail policy release --account you@company.example --reason 'Reviewed the account hold'
 ```
 
-History includes requested and observed senders, provider identifiers, acceptance evidence and correlated local feedback. A null observed sender is unknown, not proof of a particular From header. `ledger` aliases `sent`; `send-status` aliases `status`.
+History includes requested and observed senders, provider identifiers, acceptance evidence and correlated local feedback. A null observed sender is unknown, not proof of a particular From header. `ledger` aliases `sent`; `send-status REQUEST_ID` aliases `status REQUEST_ID`. With no ID, `status` runs account diagnostics, the same as `doctor`; it does not claim that synchronisation is complete.
 
 A hard bounce suppresses the recipient. Two hard bounces among the latest 20 accepted outreach messages pause the account for review. Explicit opt-out commands from known outreach recipients suppress immediately. These local heuristics cannot observe every complaint or spam signal. Releasing an account hold does not remove recipient suppressions.
 
