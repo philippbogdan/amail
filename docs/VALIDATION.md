@@ -20,7 +20,7 @@ These are small-sample development observations. They are not latency, server co
 
 ## Automated checks
 
-Formatting checks inspect the MIME structure as well as rendered text. Reads expose `body_format` and warnings for Apple Mail's shared-content wrapper and fully quoted HTML bodies. The plain alternative retains its actual quote markers. New-send verification compares the plain body with the requested text, preserving leading whitespace and paragraph boundaries while normalising transport line endings. A failed verification pauses batches and retains the existing no-resend safeguard.
+Formatting checks inspect the MIME structure as well as rendered text. Reads expose `body_format` and warnings for Apple Mail's shared-content wrapper and fully quoted HTML bodies. The plain alternative retains its actual quote markers. New-send verification compares both the plain body and the paragraph structure of a present HTML alternative with the requested text, preserving leading whitespace and paragraph boundaries while normalising transport line endings. Hidden HTML preheaders cannot conceal a fully quoted body. The HTML check handles the simple markup emitted by Mail and is not a cross-client CSS rendering guarantee. A failed verification pauses batches and retains the existing no-resend safeguard.
 
 Earlier content checks removed Apple's quote wrapper and allowed whitespace reflow. Those historical checks did not establish correct message formatting. This verification change alone does not repair Mail's scripted composer or previously delivered messages.
 

@@ -163,6 +163,8 @@ def matches_content(store,item,parts,verification):
     if verification.get("body_format_version"):
         if formatting.get("plain_body_hash") != verification["wire_body_hash"]:
             return False
+        if formatting.get("html_body_hash") is not None and formatting["html_body_hash"] != verification["wire_body_hash"]:
+            return False
     to=sorted(canonical_address(store,a) for _,a in email.utils.getaddresses([item["to"]]) if a)
     cc=sorted(canonical_address(store,a) for _,a in email.utils.getaddresses([item["cc"]]) if a)
     expected_to=sorted(canonical_address(store,a) for a in verification["to"])

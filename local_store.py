@@ -57,22 +57,12 @@ class TextHTML(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.bits = []
         self.hidden = 0
-        self.quote_depth = 0
-        self.quoted_characters = 0
-        self.unquoted_characters = 0
-        self.apple_share_wrapper = False
     def handle_starttag(self, tag, attrs):
-        if tag == "blockquote":
-            self.quote_depth += 1
-        if "Apple-Mail-URLShareWrapperClass" in dict(attrs).get("class", "").split():
-            self.apple_share_wrapper = True
         if tag in {"script", "style", "head"}:
             self.hidden += 1
         if tag in {"br", "p", "div", "li", "tr", "td", "h1", "h2", "h3"}:
             self.bits.append("\n")
     def handle_endtag(self, tag):
-        if tag == "blockquote":
-            self.quote_depth = max(0, self.quote_depth - 1)
         if tag in {"script", "style", "head"}:
             self.hidden = max(0, self.hidden - 1)
         if tag in {"p", "div", "li", "tr", "td"}:
@@ -80,10 +70,76 @@ class TextHTML(HTMLParser):
     def handle_data(self, data):
         if not self.hidden:
             self.bits.append(data)
-            if self.quote_depth:
-                self.quoted_characters += len(data.strip())
-            else:
-                self.unquoted_characters += len(data.strip())
+
+
+class BodyLayout(HTMLParser):
+    """Read the paragraph structure of the simple HTML emitted by Mail.
+
+    Source indentation is not a rendered line break. Explicit breaks and
+    paragraph boundaries are. Hidden preheaders cannot disguise a quotation.
+    This is a structural check, not a cross-client CSS rendering guarantee.
+    """
+    void_tags = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.stack = []
+        self.text = ""
+        self.quoted_characters = 0
+        self.unquoted_characters = 0
+        self.apple_share_wrapper = False
+
+    def hidden(self):
+        return any(entry[1] for entry in self.stack)
+
+    def boundary(self, count):
+        self.text = self.text.rstrip(" ")
+        existing = len(self.text) - len(self.text.rstrip("\n"))
+        self.text += "\n" * max(0, count - existing)
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        style = re.sub(r"\s+|!important", "", attrs.get("style", "").lower())
+        hidden = tag in {"head", "script", "style", "template"} or "hidden" in attrs or any(
+            rule in {"display:none", "visibility:hidden", "visibility:collapse", "mso-hide:all"}
+            for rule in style.split(";"))
+        if "Apple-Mail-URLShareWrapperClass" in attrs.get("class", "").split():
+            self.apple_share_wrapper = True
+        visible = not self.hidden() and not hidden
+        if visible:
+            if tag == "br":
+                self.text = self.text.rstrip(" ") + "\n"
+            elif tag == "p" and self.text:
+                self.boundary(2)
+            elif tag in {"div", "blockquote", "li", "tr", "pre"} and self.text:
+                self.boundary(1)
+        if tag not in self.void_tags:
+            self.stack.append((tag, hidden))
+
+    def handle_endtag(self, tag):
+        visible = not self.hidden()
+        if visible and self.text:
+            if tag == "p":
+                self.boundary(2)
+            elif tag in {"div", "blockquote", "li", "tr", "pre"}:
+                self.boundary(1)
+        for index in range(len(self.stack) - 1, -1, -1):
+            if self.stack[index][0] == tag:
+                del self.stack[index:]
+                break
+
+    def handle_data(self, data):
+        if self.hidden():
+            return
+        if any(entry[0] == "blockquote" for entry in self.stack):
+            self.quoted_characters += len(data.strip())
+        else:
+            self.unquoted_characters += len(data.strip())
+        if not any(entry[0] == "pre" for entry in self.stack):
+            data = re.sub(r"[ \t\r\n\f]+", " ", data)
+            if not self.text or self.text.endswith((" ", "\n")):
+                data = data.lstrip(" ")
+        self.text += data.replace("\xa0", " ")
 
 
 def parse_emlx(path):
@@ -117,13 +173,16 @@ def wire_body(body):
 def body_format(msg):
     """Expose MIME structure separately from the convenient text rendering."""
     plain = msg.get_body(preferencelist=("plain",))
-    parser = TextHTML()
+    parser = BodyLayout()
+    has_html = False
     for _, part in mime_parts(msg):
         if part.get_content_type() == "text/html" and part.get_content_disposition() != "attachment" and not part.get_filename():
+            has_html = True
             parser.feed(decoded(part))
     text = decoded(plain) if plain is not None else None
     return {
         "plain_body_hash": hashlib.sha256(wire_body(text).encode()).hexdigest() if text is not None else None,
+        "html_body_hash": hashlib.sha256(wire_body(parser.text.rstrip(" \n")).encode()).hexdigest() if has_html else None,
         "plain_leading_blank_lines": len(text.replace("\r\n", "\n")) - len(text.replace("\r\n", "\n").lstrip("\n")) if text is not None else None,
         "apple_share_wrapper": parser.apple_share_wrapper,
         "html_entire_body_quoted": parser.quoted_characters > 0 and parser.unquoted_characters == 0,

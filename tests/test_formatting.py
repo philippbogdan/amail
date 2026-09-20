@@ -71,6 +71,18 @@ class FormattingTests(unittest.TestCase):
 
     def test_extra_leading_blank_line_is_rejected(self):
         self.assertFalse(self.verifies('Body', '\nBody'))
+        self.assertFalse(self.verifies('Body', 'Body', '<body><br>Body</body>'))
+
+    def test_html_paragraph_loss_is_rejected(self):
+        self.assertFalse(self.verifies('First\n\nSecond', 'First\n\nSecond', '<body>First<br>Second</body>'))
+
+    def test_hidden_preheader_cannot_disguise_whole_body_quotation(self):
+        self.assertFalse(self.verifies('Body', 'Body',
+            '<span style="display: none !important">preview</span><blockquote>Body</blockquote>'))
+
+    def test_html_source_indentation_does_not_add_rendered_lines(self):
+        self.assertTrue(self.verifies('First\n\nSecond', 'First\n\nSecond',
+            '<html>\n<head><title>Subject</title></head>\n<body>\nFirst<br>\n<br>\nSecond\n</body></html>'))
 
     def test_missing_paragraph_and_indentation_are_rejected(self):
         for changed in ['First paragraph. Second paragraph.', 'First paragraph.\nSecond paragraph.',
