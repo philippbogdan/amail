@@ -295,6 +295,8 @@ def enter_body(title, text, attachments=()):
                     raise MailError('Mail did not select the complete body; no text was pasted')
                 time.sleep(.05)
             ax.assert_focus(app, window, body)
+            if board.count() != written:
+                raise MailError('Clipboard changed before body entry; nothing was pasted')
             ax.key(9, command=True) if text else ax.key(51)
             deadline = time.monotonic() + 3
             expected = ''.join(text.split())
@@ -314,6 +316,8 @@ def enter_body(title, text, attachments=()):
                     raise MailError('Clipboard changed before attachment entry; nothing was sent')
                 written = board.write([[('public.file-url', Path(path).as_uri().encode())] for path in attachments])
                 ax.assert_focus(app, window, body)
+                if board.count() != written:
+                    raise MailError('Clipboard changed before attachment paste; nothing was sent')
                 ax.key(9, command=True)
                 deadline = time.monotonic() + 5
                 while True:
