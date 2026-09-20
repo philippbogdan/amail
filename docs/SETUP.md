@@ -2,10 +2,10 @@
 
 ## Requirements and permissions
 
-- A Mac with Python 3.10 or newer, including SQLite FTS5 support. The current tested machine uses macOS 26.5 and Apple Silicon. Other Mail database versions may need changes.
+- A Mac with Python 3.10 or newer, including SQLite FTS5 support. The current native editor route was tested on macOS 27.0 and Apple Silicon. The original cache implementation was also tested on macOS 26.5. Other Mail database and editor versions may need validation.
 - Google or Exchange accounts signed into **Apple Mail**, with mail downloaded locally. Add accounts in Mail's account settings first. amail does not create system Internet Accounts or recover their passwords.
 - Full Disk Access for the actual invoking host, such as Terminal or your agent's desktop app. Grant it under System Settings > Privacy & Security > Full Disk Access, then restart that host if necessary.
-- Automation permission for the host to control Mail, when macOS asks during `amail doctor` or a supported Mail operation. Scripting permission is different from Full Disk Access. No Accessibility or browser automation is required.
+- Automation permission for the host to control Mail, when macOS asks during `amail doctor` or a supported Mail operation. Native sending also needs Accessibility access for the invoking terminal or agent host under System Settings > Privacy & Security > Accessibility. System Events and browser automation are not required.
 - Gmail API operations additionally need `gog`, your own Google OAuth client, and account consent. Exchange uses Mail's existing authorised connection.
 
 Gather these permissions and any required Google sign-ins before a long agent task. If organisational policy blocks an account or permission, respect the restriction and report the actual error. A working Apple Mail connection does not mean another Microsoft app will be permitted.
@@ -80,7 +80,7 @@ If authorisation expires, run `amail connect ADDRESS` again. It requests Gmail s
 
 Connect the account in Apple Mail and allow it to sync. Then select it with `amail setup --accounts ...` and run `amail doctor`.
 
-amail sends using Mail's scripting interface and corroborates the outcome with synchronised server metadata. It does not need a separate Microsoft Graph app registration. Whether this route is allowed depends on your organisation's existing Mail authorisation and macOS permissions. Credentials remain in Apple's account system.
+amail creates an identified compose window through Mail scripting, enters the body and attachments through its editor using Accessibility, then verifies the saved MIME draft before allowing Mail to submit it. This avoids a Mail scripting defect that turns the entire body into quoted content. Composition is serialised across accounts, the clipboard is preserved, and a focus change or failed draft check stops the send. Allow the compose window to finish before interacting with Mail. The window remains visible through validation and closes after submission. If the reviewed request deliberately has no attachments, amail can confirm Mail's missing-attachment warning. Other unresolved validation prompts stop progress without an automatic retry. Provider acceptance is still corroborated with synchronised server metadata. No separate Microsoft Graph registration is needed, and credentials remain in Apple's account system.
 
 For immediate submission, manually choose **Mail > Settings > Composing > Undo send delay > Off**. This also changes manual Mail sends. With a delay enabled, amail waits for corroboration and may report an unverified outcome before the message leaves Mail. Check `amail status REQUEST_ID`; do not blindly resend.
 

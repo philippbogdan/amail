@@ -20,7 +20,7 @@ def parser():
     for flag in ("json", "plain", "tsv"):
         style.add_argument("--" + flag, action="store_true", default=argparse.SUPPRESS)
     p = argparse.ArgumentParser(prog="amail", description="Fast email reads and verified, paced sending.", parents=[common])
-    p.add_argument("--version", action="version", version="amail 0.2.1")
+    p.add_argument("--version", action="version", version="amail 0.3.0")
     sub = p.add_subparsers(dest="command", required=True)
     descriptions = {
         "accounts": "List enabled accounts; --available discovers accounts without enabling them",
@@ -374,6 +374,13 @@ def run(args, store, state, here=HERE):
                         info.update(send_route="gmail_api", authenticated_as=profile["emailAddress"])
                     else: info.update(send_route="apple_script", automation=bridge(account["uuid"], "doctor", here, state))
                     if account["kind"] == "com.apple.account.Exchange":
+                        from native_editor import Accessibility
+                        access = Accessibility()
+                        try: info['editor_accessibility'] = bool(access.ax.AXIsProcessTrusted())
+                        finally: access.close()
+                        info['send_route'] = 'mail_editor'
+                        if not info['editor_accessibility']:
+                            info['send_requirement'] = 'Grant Accessibility access to the invoking terminal or agent host in System Settings'
                         preferences=Path.home()/"Library/Group Containers/group.com.apple.mail/Library/Preferences/group.com.apple.mail.plist"
                         settings=plistlib.loads(preferences.read_bytes()) if preferences.exists() else {}
                         info["undo_send_delay_seconds"]=settings.get("UndoSendDelayTime",10)

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0
+
+- Use Mail's editor for native message bodies and attachments, avoiding the scripted compose path that wrapped new text as a quotation. Native sends now require Accessibility access for the invoking host and briefly show their own compose window.
+- Verify the saved draft's body, MIME alternatives, recipients, reply header and attachments before submission. Serialise native compositions, preserve clipboard formats, and stop on focus changes.
+- Keep compose validation visible and handle Mail's missing-attachment warning when the reviewed request deliberately contains no attachments.
+- Preserve quote markers in plain-text alternatives instead of concealing Mail's shared-content wrapper during reads.
+- Report MIME formatting diagnostics and reject full-body HTML quotations, added leading blank lines and paragraph changes during new-send verification.
+- Keep a batch paused on a formatting verification failure without resending the ambiguous message on resume.
+- Preserve configuration, authentication, account budgets, drafts and send history during upgrades. Honour explicitly granted standing permission for internal test mail.
+
 ## 0.2.1
 
 - Restrict field projection to reading commands so output-field errors cannot obscure a completed send or mailbox change.

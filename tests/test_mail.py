@@ -177,7 +177,7 @@ class Fixture(unittest.TestCase):
 
     def test_timeout_does_not_resend_same_request(self):
         self.store.accounts["GMAIL"]["kind"]="com.apple.account.Exchange"
-        with patch.object(mail_sender,'process_start',return_value='fixture process'), patch.object(mail_sender.subprocess,'run',side_effect=subprocess.TimeoutExpired('osascript',.1)) as runner:
+        with patch.object(mail_sender,'process_start',return_value='fixture process'), patch('native_transport.submit',side_effect=subprocess.TimeoutExpired('osascript',.1)) as runner:
             result=mail_sender.send(self.store,self.args(dry_run=False),self.base/'state',self.base)
             again=mail_sender.send(self.store,self.args(dry_run=False),self.base/'state',self.base)
         self.assertEqual(result['state'],'outcome_unknown')
@@ -186,7 +186,7 @@ class Fixture(unittest.TestCase):
 
     def test_idempotency_rejects_changed_content(self):
         self.store.accounts["GMAIL"]["kind"]="com.apple.account.Exchange"
-        with patch.object(mail_sender.subprocess,'run',side_effect=subprocess.TimeoutExpired('osascript',.1)):
+        with patch('native_transport.submit',side_effect=subprocess.TimeoutExpired('osascript',.1)):
             mail_sender.send(self.store,self.args(dry_run=False),self.base/'state',self.base)
         with self.assertRaises(MailError):
             mail_sender.send(self.store,self.args(dry_run=False,body='different'),self.base/'state',self.base)
@@ -198,8 +198,8 @@ class Fixture(unittest.TestCase):
 
     def test_mail_boolean_alone_is_not_acceptance(self):
         self.store.accounts['GMAIL']['kind']='com.apple.account.Exchange'
-        reply=subprocess.CompletedProcess([],0,json.dumps({'mail_send_result':True}), '')
-        with patch.object(mail_sender.subprocess,'run',return_value=reply):
+        reply={'mail_send_result':True}
+        with patch('native_transport.submit',return_value=reply):
             result=mail_sender.send(self.store,self.args(dry_run=False),self.base/'state',self.base)
         self.assertEqual(result['state'],'provider_acceptance_unverified')
 
