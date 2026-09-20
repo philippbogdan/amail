@@ -64,6 +64,20 @@ class FormattingTests(unittest.TestCase):
         self.assertTrue(self.verifies(text, text,
             '<html><body>Hi Alex,<br><br>Café &amp; &lt;angle&gt;.<br><br>Sam</body></html>'))
 
+    def test_empty_plain_draft_requires_matching_html_and_bcc(self):
+        item, parts = self.put('', '<body>Body</body>')
+        self.assertEqual(item['body'], 'Body')
+        verification = prepare(self.store, self.args(body='Body'))[2]
+        self.assertTrue(matches_content(self.store, item, parts, verification, draft=True))
+        self.assertFalse(matches_content(self.store, item, parts, verification))
+        item['bcc'] = 'unexpected@example.net'
+        self.assertFalse(matches_content(self.store, item, parts, verification, draft=True))
+
+    def test_empty_plain_draft_fallback_keeps_quote_semantics(self):
+        item, _ = self.put('', '<blockquote>Body</blockquote>')
+        self.assertEqual(item['body'], '> Body')
+        self.assertTrue(item['body_format']['html_entire_body_quoted'])
+
     def test_matching_plain_does_not_hide_quoted_html(self):
         self.assertFalse(self.verifies('Body', 'Body', '<blockquote>Body</blockquote>'))
         self.assertFalse(self.verifies('Body', 'Body',
@@ -121,8 +135,8 @@ class FormattingTests(unittest.TestCase):
         plan = batch_plan(self.store, state, manifest)
         submissions = []
 
-        def submit(command, **kwargs):
-            submissions.append(command)
+        def submit(*args, **kwargs):
+            submissions.append(args)
             self.put('Body', '<div class="Apple-Mail-URLShareWrapperClass"><blockquote>Body</blockquote></div>')
             with contextlib.closing(sqlite3.connect(self.db)) as c, c:
                 now = int(time.time())
@@ -130,13 +144,13 @@ class FormattingTests(unittest.TestCase):
                           (now, now, 'synced-server-item-id'))
                 c.execute("update subjects set subject='Test'")
                 c.execute('insert or ignore into labels values(123,3)')
-            return subprocess.CompletedProcess(command, 0, '{"mail_send_result":true}', '')
+            return {'mail_send_result': True}
 
         def short_send(store, args, state, here):
             args.timeout = .05
             return send(store, args, state, here)
 
-        with patch('mail_sender.process_start', return_value='test'), patch('mail_sender.subprocess.run', side_effect=submit):
+        with patch('mail_sender.process_start', return_value='test'), patch('native_transport.submit', side_effect=submit):
             first = batch_run(self.store, state, self.base, plan['id'], sender=short_send)
             again = batch_run(self.store, state, self.base, plan['id'], resume=True, sender=short_send)
         self.assertEqual(first['state'], 'paused')

@@ -1,6 +1,6 @@
 # amail
 
-**A fast, local email CLI for agents on a Mac.** Read mail from Apple Mail's local cache, send through the Gmail API or an existing Exchange account, and return structured JSON. Routine commands do not click buttons or open compose windows.
+**A fast, local email CLI for agents on a Mac.** Read mail from Apple Mail's local cache, send through the Gmail API or an existing Exchange account, and return structured JSON. Reads stay in the background. Exchange sends briefly use a dedicated Mail compose window to preserve body formatting.
 
 amail is for **macOS users who already have Gmail or Microsoft 365 / Exchange connected to Apple Mail**, and want a coding agent or terminal script to work with those accounts. It is particularly useful when a work or university mailbox is authorised in Apple Mail but a separate API integration is unavailable. It uses that existing permission; it does not bypass an organisation's access controls.
 
@@ -16,7 +16,7 @@ For agents that load skills, the repository includes [skills/amail/SKILL.md](ski
 
 ## Quick start
 
-You need macOS, Python 3.10 or newer, and the selected accounts already signed into Apple Mail. The terminal or agent host needs Full Disk Access. Mail scripting also requires Automation permission. Gmail's API route needs your own Google OAuth client and [gog](https://github.com/openclaw/gogcli).
+You need macOS, Python 3.10 or newer, and the selected accounts already signed into Apple Mail. The terminal or agent host needs Full Disk Access. Native sending also requires Automation permission for Mail and Accessibility access for the invoking host. Gmail's API route needs your own Google OAuth client and [gog](https://github.com/openclaw/gogcli).
 
 Install from the project's Homebrew tap:
 

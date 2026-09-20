@@ -205,6 +205,16 @@ def message_text(msg):
     if part is None:
         return ""
     text = decoded(part)
+    if part.get_content_type() == 'text/plain' and not text.strip():
+        # Saved Mail drafts have an empty plain alternative. Render their HTML,
+        # while leaving its formatting diagnostics intact for verification.
+        layout = BodyLayout()
+        for _, fragment in mime_parts(msg):
+            if fragment.get_content_type() == 'text/html' and fragment.get_content_disposition() != 'attachment' and not fragment.get_filename():
+                layout.feed(decoded(fragment))
+        text = layout.text
+        if layout.quoted_characters and not layout.unquoted_characters:
+            text = '\n'.join('> ' + line for line in text.strip().splitlines())
     if part.get_content_type() == "text/html":
         parser = TextHTML()
         parser.feed(text)
@@ -483,7 +493,7 @@ class Store:
         body = message_text(msg)
         available = body_available(msg)
         formatting = body_format(msg)
-        item.update({"to":str(msg.get("To","")),"cc":str(msg.get("Cc","")),"message_id":str(msg.get("Message-ID","")),
+        item.update({"to":str(msg.get("To","")),"cc":str(msg.get("Cc","")),"bcc":str(msg.get("Bcc","")),"message_id":str(msg.get("Message-ID","")),
                      "reply_to":str(msg.get("Reply-To","")),"references":str(msg.get("References","")),"in_reply_to":str(msg.get("In-Reply-To","")),"body":body,
                      "body_available":available,"storage_partial":path.name.endswith(".partial.emlx"),"attachments_complete":all(p["available"] for p in parts),
                      "attachments":[{k:v for k,v in p.items() if not k.startswith("_")} for p in parts],"file":str(path),

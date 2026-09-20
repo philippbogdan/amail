@@ -156,12 +156,14 @@ def update(state,request_id,result):
         c.execute("update sends set state=?,result=? where request_id=?",(result["state"],json.dumps(result),request_id))
 
 
-def matches_content(store,item,parts,verification):
+def matches_content(store,item,parts,verification, *, draft=False):
     formatting = item.get("body_format", {})
     if formatting.get("apple_share_wrapper") or formatting.get("html_entire_body_quoted"):
         return False
     if verification.get("body_format_version"):
-        if formatting.get("plain_body_hash") != verification["wire_body_hash"]:
+        # Mail saves an empty plain alternative in drafts; its HTML must match.
+        empty_draft_plain = draft and formatting.get('plain_body_hash') == digest('') and formatting.get('html_body_hash') == verification['wire_body_hash']
+        if formatting.get("plain_body_hash") != verification["wire_body_hash"] and not empty_draft_plain:
             return False
         if formatting.get("html_body_hash") is not None and formatting["html_body_hash"] != verification["wire_body_hash"]:
             return False
@@ -171,7 +173,11 @@ def matches_content(store,item,parts,verification):
     expected_cc=sorted(canonical_address(store,a) for a in verification["cc"])
     exact_body=digest(normal_body(item["body"]))==verification["body_hash"]
     reflowed=digest(display_body(item["body"]))==verification.get("display_body_hash")
-    if to!=expected_to or cc!=expected_cc or not (exact_body or (not verification.get("body_format_version") and reflowed)):
+    if draft:
+        actual_bcc = sorted(a.casefold() for _, a in email.utils.getaddresses([item.get('bcc', '')]) if a)
+        if actual_bcc != sorted(verification['bcc']):
+            return False
+    if to!=expected_to or cc!=expected_cc or not (draft and verification.get('body_format_version') or exact_body or (not verification.get("body_format_version") and reflowed)):
         return False
     if verification.get("in_reply_to") and item.get("in_reply_to") != verification["in_reply_to"]:
         return False
@@ -206,6 +212,8 @@ def observed_acceptance(store,verification):
             item,parts=store.read(store.ref(row))
         except (MailError,OSError):
             continue
+        # Mail may replace the saved draft's Message-ID during submission.
+        # Correlate new Sent items using before_ids plus full content and headers.
         if matches_content(store,item,parts,verification):
             matched.append((row,item))
         # Self/cross-account tests can establish stronger evidence: a received
@@ -318,18 +326,13 @@ def send(store,args,state,here):
             result["elapsed_ms"] = result["submission_ms"]
             update(state, request_id, result)
             return result
-        # The payload stays in a mode-0600 temporary file, not the process arguments.
-        with tempfile.TemporaryDirectory(prefix="send-",dir=state) as directory:
-            path=Path(directory)/"request.json"
-            with open(path,"x") as f:
-                os.chmod(path,0o600)
-                json.dump(request,f)
-            remaining=max(.1,args.timeout-(time.perf_counter()-started))
-            p=subprocess.run(["osascript",str(here/"send.applescript"),str(path)],capture_output=True,text=True,timeout=remaining)
-        if p.returncode:
-            result.update(state="outcome_unknown",error="Mail script failed; check status before any further send")
-        else:
-            reply=json.loads(p.stdout)
+        from native_transport import submit as native_submit
+        def prepared(checked):
+            with ledger(state) as c, c:
+                c.execute('update sends set verification=? where request_id=?', (json.dumps(checked), request_id))
+        reply = native_submit(store, request, verification, state, here,
+                              max(.1, args.timeout-(time.perf_counter()-started)), prepared=prepared)
+        if reply:
             result["submission_ms"]=round((time.perf_counter()-started)*1000,1)
             result["mail_script"]=reply
             if reply.get("mail_send_result") is True:

@@ -22,7 +22,15 @@ These are small-sample development observations. They are not latency, server co
 
 Formatting checks inspect the MIME structure as well as rendered text. Reads expose `body_format` and warnings for Apple Mail's shared-content wrapper and fully quoted HTML bodies. The plain alternative retains its actual quote markers. New-send verification compares both the plain body and the paragraph structure of a present HTML alternative with the requested text, preserving leading whitespace and paragraph boundaries while normalising transport line endings. Hidden HTML preheaders cannot conceal a fully quoted body. The HTML check handles the simple markup emitted by Mail and is not a cross-client CSS rendering guarantee. A failed verification pauses batches and retains the existing no-resend safeguard.
 
-Earlier content checks removed Apple's quote wrapper and allowed whitespace reflow. Those historical checks did not establish correct message formatting. This verification change alone does not repair Mail's scripted composer or previously delivered messages.
+Earlier content checks removed Apple's quote wrapper and allowed whitespace reflow. Those historical checks did not establish correct message formatting. Version 0.3.0 also replaces native body and attachment entry. Previously delivered messages are not changed.
+
+## Version 0.3.0 live formatting checks
+
+On macOS 27.0, six received internal test messages were checked directly in the Mail cache with transport headers. The set covered a two-message native batch, Gmail and Exchange replies in one conversation, text and binary attachments, and Mail's missing-attachment validation. Received bodies had no added leading blank line or Apple shared-content quote wrapper. Reply headers matched the preceding message. Binary attachment bytes and text attachment contents matched; the provider normalised text-file line endings. The institutional receiving gateway added its usual external-sender notice to the incoming Gmail reply.
+
+A received message was also inspected visually in desktop Mail. No physical iPhone rendering check was performed. The test emails and account identifiers remain private. Native submission measured about two to four seconds on this machine for the small checked messages, excluding provider synchronisation.
+
+Mail can replace a saved draft's Message-ID when sending. The draft identity is retained as preparation evidence; acceptance is corroborated using new Sent records and verified content, and strengthened by a matching delivered copy when available.
 
 The standard-library suite covers read-only SQL access, Gmail labels, literal filenames and search, stale refs, MIME transfer encodings, Unicode, unavailable attachments, filename collisions, nested attached messages, immutable drafts and plans, configured pacing, concurrency, suppression, correlated feedback and crash recovery. CI uses synthetic fixtures and makes no email requests.
 
