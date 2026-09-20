@@ -2,7 +2,7 @@
 
 ## Requirements and permissions
 
-- A Mac with Python 3.10 or newer, including SQLite FTS5 support. The current tested machine uses macOS 26.5 and Apple Silicon. Other Mail database versions may need changes.
+- A Mac with Python 3.10 or newer, including SQLite FTS5 support. The current native editor route was tested on macOS 27.0 and Apple Silicon. The original cache implementation was also tested on macOS 26.5. Other Mail database and editor versions may need validation.
 - Google or Exchange accounts signed into **Apple Mail**, with mail downloaded locally. Add accounts in Mail's account settings first. amail does not create system Internet Accounts or recover their passwords.
 - Full Disk Access for the actual invoking host, such as Terminal or your agent's desktop app. Grant it under System Settings > Privacy & Security > Full Disk Access, then restart that host if necessary.
 - Automation permission for the host to control Mail, when macOS asks during `amail doctor` or a supported Mail operation. Native sending also needs Accessibility access for the invoking terminal or agent host under System Settings > Privacy & Security > Accessibility. System Events and browser automation are not required.

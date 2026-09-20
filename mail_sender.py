@@ -1,4 +1,4 @@
-"""Programmatic submission with no UI automation and explicit verification states."""
+"""Submission with draft verification and explicit provider-evidence states."""
 import contextlib
 import email.utils
 import hashlib
