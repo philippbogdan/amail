@@ -103,7 +103,9 @@ class BodyLayout(HTMLParser):
         hidden = tag in {"head", "script", "style", "template"} or "hidden" in attrs or any(
             rule in {"display:none", "visibility:hidden", "visibility:collapse", "mso-hide:all"}
             for rule in style.split(";"))
-        if "Apple-Mail-URLShareWrapperClass" in attrs.get("class", "").split():
+        if ("Apple-Mail-URLShareWrapperClass" in attrs.get("class", "").split()
+                and not any(entry[0] == "blockquote" for entry in self.stack)):
+            # A native reply may retain this marker inside quoted history.
             self.apple_share_wrapper = True
         visible = not self.hidden() and not hidden
         if visible:

@@ -59,6 +59,20 @@ class FormattingTests(unittest.TestCase):
         item['body'] = requested
         self.assertFalse(matches_content(self.store, item, parts, verification))
 
+    def test_native_reply_allows_share_wrapper_only_in_quoted_history(self):
+        requested = 'A new reply.\n\nSam'
+        html = ('<body>A new reply.<br><br>Sam<br><br><blockquote type="cite">'
+                '<div class="Apple-Mail-URLShareWrapperClass">Old message</div>'
+                '</blockquote></body>')
+        item, parts = self.put('', html)
+        verification = prepare(self.store, self.args(body=requested))[2]
+        self.assertFalse(item['body_format']['apple_share_wrapper'])
+        self.assertTrue(matches_content(self.store, item, parts, verification, draft=True))
+        wrapped_new = ('<body><blockquote><div class="Apple-Mail-URLShareWrapperClass">'
+                       'A new reply.<br><br>Sam</div></blockquote></body>')
+        item, parts = self.put('', wrapped_new)
+        self.assertFalse(matches_content(self.store, item, parts, verification, draft=True))
+
     def test_clean_plain_and_html_alternatives_pass(self):
         text = 'Hi Alex,\n\nCafé & <angle>.\n\nSam'
         self.assertTrue(self.verifies(text, text,
