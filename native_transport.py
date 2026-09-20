@@ -38,6 +38,7 @@ def script(request, operation, here, path, deadline):
                             uncertain=reply.get('stage') == 'send')
     valid = (operation == 'compose' and type(reply.get('outgoing_id')) is int
              or operation == 'prepare' and reply.get('stage') == 'prepared'
+             or operation == 'discard' and reply.get('stage') == 'discarded'
              or operation == 'submit' and type(reply.get('mail_send_result')) is bool)
     if not valid:
         raise ProviderError('Mail returned an incomplete operation result', uncertain=operation == 'submit')
@@ -53,25 +54,37 @@ def prepare_native(store, request, verification, state, here, path, deadline):
                                               subject=request['subject'], limit=10000)}
     composed = script(request, 'compose', here, path, deadline)
     request['outgoing_id'] = composed['outgoing_id']
-    enter_body(request['compose_title'], request['body'], request['attach'])
-    script(request, 'prepare', here, path, deadline)
-    while time.monotonic() < deadline:
-        matched = {}
-        for row in store.query(account=request['account_id'], mailbox='drafts', subject=request['subject'], limit=200):
-            if row['id'] in before or row['subject'] != request['subject']:
-                continue
-            try:
-                item, parts = store.read(store.ref(row))
-            except (MailError, OSError):
-                continue
-            if canonical_address(store, row['address'] or '') != canonical_address(store, request['sender']):
-                continue
-            if matches_content(store, item, parts, verification, draft=True) and item.get('message_id'):
-                matched[item['message_id']] = item
-        if len(matched) == 1:
-            return next(iter(matched.values()))
-        time.sleep(.1)
-    raise MailError('The saved Mail draft did not match the reviewed body, recipients, threading and attachments; nothing was sent')
+    try:
+        enter_body(request['compose_title'], request['body'], request['attach'])
+        script(request, 'prepare', here, path, deadline)
+        while time.monotonic() < deadline:
+            matched = {}
+            for row in store.query(account=request['account_id'], mailbox='drafts', subject=request['subject'], limit=200):
+                if row['id'] in before or row['subject'] != request['subject']:
+                    continue
+                try:
+                    item, parts = store.read(store.ref(row))
+                except (MailError, OSError):
+                    continue
+                if canonical_address(store, row['address'] or '') != canonical_address(store, request['sender']):
+                    continue
+                if matches_content(store, item, parts, verification, draft=True) and item.get('message_id'):
+                    matched[item['message_id']] = item
+            if len(matched) == 1:
+                return next(iter(matched.values()))
+            time.sleep(.1)
+        raise MailError('The saved Mail draft did not match the reviewed body, recipients, threading and attachments; nothing was sent')
+    except BaseException:
+        discard(request, here, path)
+        raise
+
+
+def discard(request, here, path):
+    """Best effort: close amail's own unsent compose window so nothing lingers."""
+    try:
+        script(request, 'discard', here, path, time.monotonic() + 15)
+    except Exception:
+        pass
 
 
 def submit(store, request, verification, state, here, timeout, *, prepared=None, prepare_only=False):

@@ -20,6 +20,7 @@ on run argv
             if senderAddress is not in (email addresses of sendingAccount) then error "Sender is not configured on the selected account"
             if operation is "compose" then
                 set replySource to q's objectForKey:"reply_source"
+                if replySource is missing value then set replySource to q's objectForKey:"forward_source"
                 if replySource is missing value then
                     set outgoing to make new outgoing message with properties {sender:senderText, subject:marker, visible:true}
                 else
@@ -35,8 +36,13 @@ on run argv
                             if my normalID(message id of item 1 of candidates) is my normalID(expectedID) then set originalMessage to item 1 of candidates
                         end if
                     end repeat
-                    if originalMessage is missing value then error "The original reply message is unavailable or changed"
-                    set outgoing to reply originalMessage with opening window
+                    if originalMessage is missing value then error "The original message is unavailable or changed"
+                    -- Mail builds the quoted history, attribution line and thread headers itself.
+                    if (replySource's objectForKey:"kind") as text is "forward" then
+                        set outgoing to forward originalMessage with opening window
+                    else
+                        set outgoing to reply originalMessage with opening window
+                    end if
                     set sender of outgoing to senderText
                     set subject of outgoing to marker
                     delete every to recipient of outgoing
@@ -46,6 +52,12 @@ on run argv
                 return "{\"outgoing_id\":" & (id of outgoing) & ",\"stage\":\"composed\"}"
             end if
             set outgoing to outgoing message id ((q's objectForKey:"outgoing_id") as integer)
+            if operation is "discard" then
+                -- Close amail's own compose window without saving, so a failed
+                -- preparation never leaves a stray draft or window behind.
+                delete outgoing
+                return "{\"stage\":\"discarded\"}"
+            end if
             if operation is "prepare" then
                 set theStage to "prepare-recipients"
                 if subject of outgoing is not marker then error "Compose identity changed"

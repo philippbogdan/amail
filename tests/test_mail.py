@@ -218,13 +218,32 @@ class Fixture(unittest.TestCase):
             c.execute('insert into labels values(123,3)')
         _,_,v,_=mail_sender.prepare(self.store,self.args())
         v['before_ids']=[]
+        # A filed Sent copy with nothing queued in an Outbox is acceptance even before server metadata syncs.
+        self.assertEqual(mail_sender.observed_acceptance(self.store,v)['evidence']['type'],'sent_copy_filed_without_outbox_entry')
+        with contextlib.closing(sqlite3.connect(self.db)) as c,c:
+            c.execute("insert into mailboxes values(9,'imap://GMAIL/Outbox',1,0)")
+            c.execute('insert into messages(ROWID,message_id,global_message_id,remote_id,mailbox,date_received,date_sent,read,flagged,subject_prefix,subject,sender,deleted,conversation_id) values(124,501,601,null,9,?,?,0,0,"",1,2,0,1)',(now,now))
         self.assertIsNone(mail_sender.observed_acceptance(self.store,v))
         with contextlib.closing(sqlite3.connect(self.db)) as c,c:
+            c.execute('delete from messages where ROWID=124')
             c.execute('insert into server_messages values(1,123,1,0,12)')
             c.execute('insert into server_labels values(1,3)')
         self.assertEqual(mail_sender.observed_acceptance(self.store,v)['evidence']['type'],'synced_imap_sent_membership')
         v['before_ids']=[123]
         self.assertIsNone(mail_sender.observed_acceptance(self.store,v))
+
+    def test_acceptance_window_follows_request_time_not_one_hour(self):
+        self.write_message(123,body='Body')
+        old=int(time.time())-5*3600
+        with contextlib.closing(sqlite3.connect(self.db)) as c,c:
+            c.execute('update messages set sender=2,date_received=?,date_sent=?',(old,old))
+            c.execute("update subjects set subject='Test'")
+            c.execute('insert into labels values(123,3)')
+        _,_,v,_=mail_sender.prepare(self.store,self.args())
+        v['before_ids']=[]
+        self.assertIsNone(mail_sender.observed_acceptance(self.store,v))
+        v['created']=old-60
+        self.assertIsNotNone(mail_sender.observed_acceptance(self.store,v))
 
     def test_rejects_header_injection(self):
         for args in [self.args(subject='Hello\nBcc: attacker@example.com'),self.args(to=['a@example.com\n'])]:

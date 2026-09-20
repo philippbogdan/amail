@@ -44,9 +44,13 @@ def freeze_attachment(path, state):
 
 
 def normalise(item, base, state, store, *, require_id=False):
-    allowed = {"id", "from", "to", "cc", "bcc", "subject", "body", "body_file", "attachments", "reply_to_ref", "name"}
+    allowed = {"id", "from", "to", "cc", "bcc", "subject", "body", "body_file", "attachments", "reply_to_ref", "forward_ref", "name"}
     if not isinstance(item, dict):
         raise MailError("Message must be a JSON object; see amail schema message")
+    # draft show returns derived fields; accept its output back unchanged.
+    item = {key: value for key, value in item.items() if key not in {"account_uuid"}}
+    if isinstance(item.get("attachments"), list) and all(isinstance(a, dict) and "path" in a for a in item["attachments"]):
+        item["attachments"] = [a["path"] for a in item["attachments"]]
     unknown = set(item) - allowed
     if unknown:
         raise MailError("Unsupported message fields: " + ", ".join(sorted(unknown)) + "; see amail schema message")
@@ -74,10 +78,13 @@ def normalise(item, base, state, store, *, require_id=False):
                "to": recipients("to"), "cc": recipients("cc"), "bcc": recipients("bcc"),
                "subject": item["subject"], "body": body, "name": item.get("name", getattr(store,"display_name","")),
                "attachments": [freeze_attachment(base / p, state) for p in item.get("attachments", [])]}
-    if item.get("reply_to_ref"):
-        from mail_operations import context
-        context(store,item["reply_to_ref"])
-        message["reply_to_ref"] = item["reply_to_ref"]
+    if item.get("reply_to_ref") and item.get("forward_ref"):
+        raise MailError("A message is either a reply or a forward, not both")
+    for field in ("reply_to_ref", "forward_ref"):
+        if item.get(field):
+            from mail_operations import context
+            context(store,item[field])
+            message[field] = item[field]
     prepare(store, arguments(message, request_id="validation", dry_run=True),state=state)
     return message
 
@@ -89,7 +96,8 @@ def arguments(message, *, request_id, dry_run=False, purpose="personal", timeout
     return argparse.Namespace(sender=message["from"], to=message["to"], cc=message["cc"], bcc=message["bcc"],
         subject=message["subject"], body=message["body"], body_file=None, name=message["name"],
         attach=[a["path"] for a in message["attachments"]], request_id=request_id,
-        dry_run=dry_run, cap=None, timeout=timeout, purpose=purpose, reply_to_ref=message.get("reply_to_ref"))
+        dry_run=dry_run, cap=None, timeout=timeout, purpose=purpose, reply_to_ref=message.get("reply_to_ref"),
+        forward_ref=message.get("forward_ref"))
 
 
 def draft_create(store, state, item, base, draft_id=None):
@@ -306,7 +314,8 @@ def input_schema(kind):
         "body": {"type": "string", "description": "Complete plain-text body, including greeting and signature"},
         "body_file": {"type": "string", "description": "UTF-8 text file, relative to the manifest directory"},
         "attachments": {"type": "array", "items": {"type": "string"}, "default": [], "description": "File paths relative to the manifest directory; bytes are frozen at planning time"},
-        "reply_to_ref": {"type": "string", "description": "Original amail ref for a threaded reply"},
+        "reply_to_ref": {"type": "string", "description": "Original amail ref; Mail composes a native reply with the quoted history below the body"},
+        "forward_ref": {"type": "string", "description": "Original amail ref; Mail composes a native forward with the original content and attachments below the body"},
         "name": {"type": "string", "description": "Sender display name; defaults to private configuration"},
     }
     required = ["from", "subject"]

@@ -1,6 +1,6 @@
 # amail
 
-**A fast, local email CLI for agents on a Mac.** Read mail from Apple Mail's local cache, send through the Gmail API or an existing Exchange account, and return structured JSON. Reads stay in the background. Exchange sends briefly use a dedicated Mail compose window to preserve body formatting.
+**A fast, local email CLI for agents on a Mac.** Read mail from Apple Mail's local cache, send and reply through the accounts already signed into Apple Mail, and return structured JSON. Reads stay in the background. Sends briefly use a dedicated Mail compose window: Mail itself composes replies and forwards, so quoted history, attribution lines, forwarded attachments and thread headers are Mail's own.
 
 amail is for **macOS users who already have Gmail or Microsoft 365 / Exchange connected to Apple Mail**, and want a coding agent or terminal script to work with those accounts. It is particularly useful when a work or university mailbox is authorised in Apple Mail but a separate API integration is unavailable. It uses that existing permission; it does not bypass an organisation's access controls.
 
@@ -16,7 +16,7 @@ For agents that load skills, the repository includes [skills/amail/SKILL.md](ski
 
 ## Quick start
 
-You need macOS, Python 3.10 or newer, and the selected accounts already signed into Apple Mail. The terminal or agent host needs Full Disk Access. Native sending also requires Automation permission for Mail and Accessibility access for the invoking host. Gmail's API route needs your own Google OAuth client and [gog](https://github.com/openclaw/gogcli).
+You need macOS, Python 3.10 or newer, and the selected accounts already signed into Apple Mail. The terminal or agent host needs Full Disk Access. Sending requires Automation permission for Mail and Accessibility access for the invoking host. Optional live Gmail reads (`gmail:` refs, `--fetch`, `thread`) need your own Google OAuth client and [gog](https://github.com/openclaw/gogcli); sending never does.
 
 Install from the project's Homebrew tap:
 
@@ -25,7 +25,7 @@ brew install philippbogdan/tap/amail
 amail setup
 ```
 
-The formula installs an isolated Python runtime and the CLI. Gmail's optional OAuth helper, gog, is configured separately. This is a third-party tap, not a listing in Homebrew core. See [the tap](https://github.com/philippbogdan/homebrew-tap) for package updates and tests.
+The formula installs an isolated Python runtime and the CLI. The optional Gmail read helper, gog, is configured separately. This is a third-party tap, not a listing in Homebrew core. See [the tap](https://github.com/philippbogdan/homebrew-tap) for package updates and tests.
 
 Or install directly from source:
 
@@ -83,7 +83,7 @@ amail send --from you@company.example --to colleague@example.org \
   --subject 'Meeting notes' --body-file notes.txt --dry-run
 ```
 
-After reviewing the exact draft and obtaining approval, submit using a stable `--request-id`. Replies and forwards create local drafts unless `--send` is specified. A reviewed batch freezes each recipient's body, subject and attachment bytes before execution. Sending approval belongs to the human and agent workflow; the CLI itself is a capable sending tool, not an approval sandbox.
+After reviewing the exact draft and obtaining approval, submit using a stable `--request-id`. Replies and forwards create local drafts unless `--send` is specified; the draft holds only the new text, and Mail adds its own quoted history or forwarded content below it when the message is composed. A reviewed batch freezes each recipient's body, subject and attachment bytes before execution. Sending approval belongs to the human and agent workflow; the CLI itself is a capable sending tool, not an approval sandbox.
 
 ## How it works
 
@@ -94,22 +94,22 @@ After reviewing the exact draft and obtaining approval, submit using a stable `-
              |                   |
           Fast reads         Sends and changes
              |                   |
-      Read-only SQLite      +----+----------------+
-      and MIME files        |                     |
-             |          Gmail API          Mail scripting
-      Apple Mail cache      |                     |
-                        Google OAuth      Signed-in Exchange
+      Read-only SQLite      Mail's own compose window
+      and MIME files        (reply / forward / new)
+             |                   |
+      Apple Mail cache      Signed-in Gmail and Exchange
+                            accounts, Mail's sessions
 ```
 
 Local reads do not mark messages read. The reader understands Gmail label membership, decoded MIME bodies, HTML, Unicode and separately cached attachments. Missing content is explicit. `amail index` builds a separate body-search snapshot; `amail sync` requests a Mail refresh. Neither implies that every server message is cached.
 
-Gmail acceptance is backed by an API response containing a server message ID. Exchange acceptance is corroborated against a newly synchronised Sent item or a received copy. A successful script call alone is insufficient. Results distinguish `accepted`, `rejected`, `provider_acceptance_unverified` and `outcome_unknown`; ambiguous submissions are never retried automatically.
+Acceptance is corroborated against the Sent copy Mail files after the account's server takes the message (with nothing left in an Outbox), synchronised server metadata when already available, or a received copy in another configured account. A successful script call alone is insufficient. Reconciliation of an unverified send uses the request time, not a fixed window, so `amail status REQUEST_ID` can settle it hours later. Results distinguish `accepted`, `rejected`, `provider_acceptance_unverified` and `outcome_unknown`; ambiguous submissions are never retried automatically.
 
 On the development Mac, small cached reads were typically under 100 ms, and final small-send checks took about 1.0 to 1.5 seconds, including acceptance observation. These are measurements from a small sample, not latency guarantees. Exchange's Mail Undo Send delay must be set to Off for immediate submission; amail reports the setting but does not change it. [Validation and limitations](docs/VALIDATION.md)
 
 ## Credentials, privacy and sending limits
 
-Configuration and state live in `~/Library/Application Support/amail`, outside the checkout. Gmail refresh tokens stay in gog's credential store. amail temporarily exports the selected refresh token into a private directory when refreshing access, then removes the export. Short-lived access tokens are cached locally with private permissions. Exchange credentials remain with Apple Mail. amail has no hosted backend or telemetry.
+Configuration and state live in `~/Library/Application Support/amail`, outside the checkout. Sending uses only the sessions Apple Mail already holds. Optional Gmail read tokens stay in gog's credential store. amail temporarily exports the selected refresh token into a private directory when refreshing access, then removes the export. Short-lived access tokens are cached locally with private permissions. Exchange credentials remain with Apple Mail. amail has no hosted backend or telemetry.
 
 New installations use an illustrative conservative outreach policy of **50 recipients per rolling 24 hours, six messages per rolling hour, and a minimum ten-minute gap per account**, for both Gmail and Exchange. These are local defaults, not provider quotas or a guarantee against filtering. You can configure separate provider profiles in your private config. Existing installations retain their configured limits, including customised Exchange pacing.
 

@@ -289,8 +289,24 @@ class SubmissionWatch:
             time.sleep(.05)
 
 
+def squash(value):
+    """Whitespace-insensitive comparison key for editor text."""
+    return ''.join(value.replace('\ufffc', '').split())
+
+
+def attachment_names(ax, body):
+    return [ax.text(ax.attr(item, 'AXDescription')) for item in ax.walk(body)
+            if ax.text(ax.attr(item, 'AXRole')) in {'AXAttachment', 'AXButton'}]
+
+
 def enter_body(title, text, attachments=()):
-    """Replace only the body of a uniquely identified compose window."""
+    """Insert the reviewed text at the top of a uniquely identified compose window.
+
+    Whatever Mail already placed in the editor stays below the new text: the
+    quoted history and attribution line of a native reply or forward, and any
+    configured signature. Attachments follow the new text.
+    """
+    text = text.rstrip('\n')
     ax = Accessibility()
     board = None
     try:
@@ -311,31 +327,27 @@ def enter_body(title, text, attachments=()):
         written = board.write([[('public.utf8-plain-text', text.encode())]])
         try:
             ax.assert_focus(app, window, body)
-            previous = ''.join(ax.body_text(body).replace('\ufffc', '').split())
-            ax.key(0, command=True)  # Command-A, restricted to the Mail process.
-            deadline = time.monotonic() + 3
-            while ''.join((ax.selected_text(body) or '').replace('\ufffc', '').split()) != previous:
-                ax.assert_focus(app, window, body)
-                if time.monotonic() >= deadline:
-                    raise MailError('Mail did not select the complete body; no text was pasted')
-                time.sleep(.05)
+            previous = squash(ax.body_text(body))
+            existing_attachments = len(attachment_names(ax, body))
+            ax.key(126, command=True)  # Command-Up: the start of the document, above any quoted history.
+            time.sleep(.05)
             ax.assert_focus(app, window, body)
             if board.count() != written:
                 raise MailError('Clipboard changed before body entry; nothing was pasted')
-            ax.key(9, command=True) if text else ax.key(51)
+            if text:
+                ax.key(9, command=True)  # Command-V, restricted to the Mail process.
+            expected = squash(text) + previous
             deadline = time.monotonic() + 3
-            expected = ''.join(text.split())
             while True:
                 ax.assert_focus(app, window, body)
-                if ''.join(ax.body_text(body).split()) == expected:
+                if squash(ax.body_text(body)) == expected:
                     break
                 if time.monotonic() >= deadline:
-                    raise MailError('Mail did not confirm body entry; the message was not sent')
+                    raise MailError('Mail did not place the text at the top of the body; the message was not sent')
                 time.sleep(.05)
             if attachments:
                 ax.assert_focus(app, window, body)
-                ax.key(125, command=True)  # End of the editable document.
-                ax.key(36)  # Put attachments after the final body paragraph.
+                ax.key(36)  # Return: a new paragraph after the entered text, before any history.
                 time.sleep(.1)
                 if board.count() != written:
                     raise MailError('Clipboard changed before attachment entry; nothing was sent')
@@ -347,9 +359,9 @@ def enter_body(title, text, attachments=()):
                 deadline = time.monotonic() + 5
                 while True:
                     ax.assert_focus(app, window, body)
-                    descriptions = [ax.text(ax.attr(item, 'AXDescription')) for item in ax.walk(body)
-                                    if ax.text(ax.attr(item, 'AXRole')) in {'AXAttachment', 'AXButton'}]
-                    if len(descriptions) == len(attachments) and all(any(Path(path).name in desc for desc in descriptions) for path in attachments):
+                    descriptions = attachment_names(ax, body)
+                    if (len(descriptions) == existing_attachments + len(attachments)
+                            and all(any(Path(path).name in desc for desc in descriptions) for path in attachments)):
                         break
                     if time.monotonic() >= deadline:
                         raise MailError('Mail did not confirm every attachment; nothing was sent')

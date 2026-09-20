@@ -4,13 +4,10 @@ The refresh token remains in gog's keyring. Only a short-lived access token is
 cached in an owner-only local file. Tokens never enter argv or diagnostic output.
 """
 import base64
-import email.message
-import email.policy
 import email.utils
 import fcntl
 import hashlib
 import json
-import mimetypes
 import os
 from pathlib import Path
 import subprocess
@@ -169,62 +166,3 @@ class Gmail:
         result = self.request("/messages/" + identifier, query={"format": "raw"})
         encoded = result.get("raw", "")
         return base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)), result
-
-
-def build_mime(request):
-    message = email.message.EmailMessage(policy=email.policy.SMTP)
-    message["From"] = request["formatted_sender"]
-    for key in ("to", "cc", "bcc"):
-        if request[key]:
-            message[key.capitalize()] = ", ".join(request[key])
-    message["Subject"] = request["subject"]
-    message["Date"] = email.utils.formatdate(localtime=True)
-    message["Message-ID"] = request.get("message_id") or email.utils.make_msgid(domain=request["sender"].split("@", 1)[1])
-    if request.get("request_id"):
-        message["X-Amail-Request-ID"] = request["request_id"]
-    if request.get("in_reply_to"):
-        message["In-Reply-To"] = request["in_reply_to"]
-        message["References"] = request.get("references") or request["in_reply_to"]
-    message.set_content(request["body"], charset="utf-8", cte="base64")
-    for value in request["attach"]:
-        path = Path(value)
-        kind = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        main, sub = kind.split("/", 1)
-        message.add_attachment(path.read_bytes(), maintype=main, subtype=sub,
-                               filename=path.name, cte="base64")
-    return message.as_bytes()
-
-
-def submit(request, timeout, state):
-    deadline=time.monotonic()+timeout
-    client = Gmail(request.get("auth_account") or request["sender"], state)
-    if client.account != request["sender"].casefold():
-        aliases = client.request("/settings/sendAs", timeout=remaining(deadline)).get("sendAs", [])
-        if not any(a.get("sendAsEmail", "").casefold() == request["sender"].casefold() and a.get("verificationStatus") == "accepted" for a in aliases):
-            raise ProviderError("Requested Gmail sender is not a verified send-as alias")
-    if request.get("in_reply_to") and not request.get("gmail_thread_id"):
-        matches = client.find("rfc822msgid:" + request["in_reply_to"].strip("<>"), maximum=10,timeout=remaining(deadline))
-        if len(matches) > 1:
-            raise ProviderError("Original Gmail thread lookup is ambiguous")
-        if matches:
-            request["gmail_thread_id"] = matches[0].get("threadId")
-    payload = {"raw": base64.urlsafe_b64encode(build_mime(request)).decode()}
-    if request.get("gmail_thread_id"):
-        payload["threadId"] = request["gmail_thread_id"]
-    result = client.request("/messages/send", payload=payload, timeout=remaining(deadline))
-    message_id = result.get("id")
-    if not isinstance(message_id, str) or not message_id:
-        raise ProviderError("Gmail submission returned no message ID; reconcile its outcome", uncertain=True)
-    accepted = {"state": "accepted", "provider": "gmail", "provider_message_id": message_id,
-            "provider_thread_id": result.get("threadId"), "requested_message_id": request.get("message_id"),
-            "ref": "gmail:" + request["account_id"] + ":" + message_id,
-            "evidence": {"type": "gmail_messages_send_response", "message_id": message_id},
-            "verification_source": "Gmail API accepted the message and returned its server ID"}
-    try:
-        metadata = client.request("/messages/" + urllib.parse.quote(message_id, safe=""),
-                                  query={"format":"metadata", "metadataHeaders":["Message-ID","From"]}, timeout=remaining(deadline))
-        headers = {h["name"].casefold():h["value"] for h in metadata.get("payload",{}).get("headers",[])}
-        accepted.update(message_id=headers.get("message-id"), effective_from=headers.get("from"))
-    except ProviderError:
-        accepted["metadata_pending"] = True
-    return accepted

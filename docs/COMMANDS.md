@@ -55,7 +55,7 @@ Run `amail schema message` or `amail schema batch` for the full machine-readable
 }
 ```
 
-Use exactly one of `body` or `body_file`. Paths are relative to the JSON file. Optional `name` overrides the configured display name. Optional `reply_to_ref` preserves a known conversation.
+Use exactly one of `body` or `body_file`. Paths are relative to the JSON file. Optional `name` overrides the configured display name. Optional `reply_to_ref` makes Mail compose a native reply to that message, and optional `forward_ref` a native forward; the body is only the new text placed above Mail's own quoted history or forwarded content. `draft show` output can be edited and passed back to `draft update` unchanged.
 
 ```sh
 amail draft create message.json
@@ -87,7 +87,7 @@ amail reply REF --all --body-file reply.txt
 amail forward REF --to colleague@example.org --body 'For context.'
 ```
 
-These produce local drafts. Review them and approve before `draft send`, or use `--send` only when the exact outgoing message is already authorised. `--from` selects another enabled sender. Cross-account replies using the Mail route require the original to be present in Mail's cache.
+These produce local drafts holding the new text only. When sent, Mail composes the reply or forward itself: subject prefix, `In-Reply-To` and `References`, the "On DATE, NAME wrote:" line, the quoted original, and for forwards the original content and attachments. amail inserts the new text above that history and verifies the saved draft before Mail submits it. Review drafts and approve before `draft send`, or use `--send` only when the exact outgoing message is already authorised. `--from` selects another enabled sender; by default a reply comes from the alias the original was addressed to. The original must be present in Mail's cache.
 
 ## Mailbox changes
 
