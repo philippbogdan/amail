@@ -5,7 +5,6 @@ import os
 import subprocess
 import tempfile
 import time
-import uuid
 from pathlib import Path
 from gmail_backend import ProviderError
 from local_store import MailError
@@ -46,9 +45,10 @@ def script(request, operation, here, path, deadline):
 
 
 def prepare_native(store, request, verification, state, here, path, deadline):
-    from native_editor import enter_body
+    from native_editor import enter_body, ensure_subject_available
     from mail_sender import matches_content, canonical_address
-    request['compose_title'] = 'amail-compose-' + uuid.uuid4().hex
+    request['compose_title'] = request['subject']
+    ensure_subject_available(request['subject'])
     before = {row['id'] for row in store.query(account=request['account_id'], mailbox='drafts',
                                               subject=request['subject'], limit=10000)}
     composed = script(request, 'compose', here, path, deadline)

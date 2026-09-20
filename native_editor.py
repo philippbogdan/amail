@@ -91,11 +91,13 @@ class Accessibility:
             pending.extend(reversed(self.children(element)))
         raise MailError('Mail compose accessibility tree exceeded its bound')
 
-    def mail(self):
+    def mail(self, *, allow_absent=False):
         if not self.ax.AXIsProcessTrusted():
             raise MailError('Allow Accessibility access for the invoking terminal or agent host in System Settings, then run amail doctor')
         result = subprocess.run(['pgrep', '-x', 'Mail'], capture_output=True, text=True, timeout=2)
         pids = result.stdout.split()
+        if not pids and allow_absent:
+            return None
         if len(pids) != 1:
             raise MailError('Cannot identify one running Apple Mail process')
         self.pid = int(pids[0])
@@ -149,8 +151,19 @@ class Accessibility:
             self.ax.CGEventPostToPid(self.pid, event)
 
     def body_text(self, body):
-        return ''.join(self.text(self.attr(item, 'AXValue')) for item in self.walk(body)
-                       if self.text(self.attr(item, 'AXRole')) in {'AXStaticText', 'AXTextArea'})
+        # Accessibility children can repeat the same table/banner text. Read
+        # one native document range, as we do for the actual selection.
+        document = self.parameter(body, 'AXTextMarkerRangeForUIElement', body)
+        text = self.parameter(body, 'AXStringForTextMarkerRange', document) if document else None
+        if text is None:
+            raise MailError('Mail did not expose the complete editor text; no text was pasted')
+        return self.text(text)
+
+    def parameter(self, element, name, value):
+        result = ctypes.c_void_p()
+        error = self.ax.AXUIElementCopyParameterizedAttributeValue(
+            element, self.string(name), value, ctypes.byref(result))
+        return self.own(result.value) if error == 0 else None
 
     def selected_text(self, body):
         selection = self.attr(body, 'AXSelectedTextMarkerRange')
@@ -159,6 +172,18 @@ class Accessibility:
                 body, self.string('AXStringForTextMarkerRange'), selection, ctypes.byref(result)):
             return None
         return self.text(self.own(result.value))
+
+
+def ensure_subject_available(subject):
+    """Keep the real subject visible without risking another open draft."""
+    ax = Accessibility()
+    try:
+        app = ax.mail(allow_absent=True)
+        if app and any(ax.text(ax.attr(window, 'AXTitle')) == subject
+                       for window in ax.array(ax.attr(app, 'AXWindows'))):
+            raise MailError('A Mail compose window with this subject is already open; close it before retrying')
+    finally:
+        ax.close()
 
 
 class Pasteboard:
@@ -286,7 +311,7 @@ def enter_body(title, text, attachments=()):
         written = board.write([[('public.utf8-plain-text', text.encode())]])
         try:
             ax.assert_focus(app, window, body)
-            previous = ''.join(ax.body_text(body).split())
+            previous = ''.join(ax.body_text(body).replace('\ufffc', '').split())
             ax.key(0, command=True)  # Command-A, restricted to the Mail process.
             deadline = time.monotonic() + 3
             while ''.join((ax.selected_text(body) or '').replace('\ufffc', '').split()) != previous:
