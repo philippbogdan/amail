@@ -24,6 +24,23 @@ class ContractTests(unittest.TestCase):
     row=fixtures.Fixture.row
     args=fixtures.Fixture.args
 
+    def test_draft_retry_preserves_request_id_and_never_retries_unknown(self):
+        from workflows import draft_create
+        for uncertain in (False, True):
+            with self.subTest(uncertain=uncertain):
+                state = self.base / ('retry-' + str(uncertain))
+                draft = draft_create(self.store, state, {'from': 'owner@example.com', 'to': ['person@example.net'],
+                    'subject': 'Reply', 'body': 'Reviewed body'}, self.base)
+                first_args = parser().parse_args(['draft', 'send', draft['id']])
+                retry_args = parser().parse_args(['draft', 'send', draft['id'], '--retry-rejected'])
+                with patch('gmail_backend.submit', side_effect=ProviderError('failed', uncertain=uncertain)):
+                    first = run(first_args, self.store, state, self.base)
+                with patch('gmail_backend.submit', return_value={'state':'accepted','provider':'gmail'}) as backend:
+                    retry = run(retry_args, self.store, state, self.base)
+                self.assertEqual(first['request_id'], retry['request_id'])
+                self.assertEqual(backend.call_count, 0 if uncertain else 1)
+                self.assertEqual(retry['state'], 'outcome_unknown' if uncertain else 'accepted')
+
     def test_recipient_filter_and_cursor(self):
         self.assertEqual(len(self.store.query(recipient='owner@example.com')),1)
         self.assertEqual(self.store.query(recipient='external.example'),[])

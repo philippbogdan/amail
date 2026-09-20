@@ -36,6 +36,14 @@ The standard-library suite covers read-only SQL access, Gmail labels, literal fi
 
 The release checks also exercise isolated installation, config migration and reuse of existing credential storage. A working fixture suite does not establish a new provider or macOS version as supported; live validation on that surface is separate.
 
+## Version 0.3.1 rich-reply regression
+
+The 0.3.0 live sample missed a native-selection failure on rich messages whose accessibility children repeat warning-banner and table text. Version 0.3.1 reads the editor through its native full-document text range. It retains the complete-selection guard and saved-MIME checks. Compose windows display the actual subject throughout, and an existing window with that exact subject prevents preparation before editing.
+
+A six-message internal conversation alternated Gmail and institutional Exchange. It covered rich HTML, security notices, signature tables, quoted history, Unicode, a long paragraph, text and binary attachments, and an attached email. Every reply retained the reply prefix and referred to the preceding delivered Message-ID. Received copies were checked with transport headers and visually inspected in desktop Mail. The receiving gateway canonicalised the attached email headers and line endings; its addresses, subject and body were preserved. No physical iPhone check was performed.
+
+The fixture suite now includes duplicate accessibility labels, missing native text ranges, existing-subject collision protection and unchanged-draft retries. A confirmed rejection can be retried with the same request ID; unknown outcomes remain non-retryable.
+
 ## Public packaging checks
 
 The public release passes 56 fixture tests, including an installation with no configured accounts, registration of a synthetic OAuth client, rejection of unknown accounts, and a repeat upgrade that preserves settings. The reusable agent skill passes its metadata validator.

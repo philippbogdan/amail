@@ -20,7 +20,7 @@ def parser():
     for flag in ("json", "plain", "tsv"):
         style.add_argument("--" + flag, action="store_true", default=argparse.SUPPRESS)
     p = argparse.ArgumentParser(prog="amail", description="Fast email reads and verified, paced sending.", parents=[common])
-    p.add_argument("--version", action="version", version="amail 0.3.0")
+    p.add_argument("--version", action="version", version="amail 0.3.1")
     sub = p.add_subparsers(dest="command", required=True)
     descriptions = {
         "accounts": "List enabled accounts; --available discovers accounts without enabling them",
@@ -136,7 +136,9 @@ def parser():
         q = ds.add_parser(name, parents=[common])
         if name in {"update", "show", "send", "discard"}: q.add_argument("id")
         if name in {"create", "update"}: q.add_argument("file")
-        if name == "send": q.add_argument("--dry-run", action="store_true")
+        if name == "send":
+            q.add_argument("--dry-run", action="store_true")
+            q.add_argument("--retry-rejected", action="store_true", help="Retry this unchanged draft only after a confirmed rejection; never resend an unknown outcome")
     batch = command("batch"); bs = batch.add_subparsers(dest="action", required=True)
     for name in ("plan", "show", "run", "status", "pause", "resume", "cancel", "export"):
         description = {"plan": "Freeze a JSONL manifest without sending; use amail schema batch for the complete input contract",
@@ -306,7 +308,9 @@ def run(args, store, state, here=HERE):
                 initialise(c)
                 return [dict(r) for r in c.execute("select id,revision,created from drafts order by created desc")]
         draft = draft_get(state, args.id)
-        return send(store, arguments(draft["message"], request_id=f'{args.id}-{draft["revision"]}', dry_run=args.dry_run), state, here)
+        send_args = arguments(draft["message"], request_id=f'{args.id}-{draft["revision"]}', dry_run=args.dry_run)
+        send_args.retry_rejected = args.retry_rejected
+        return send(store, send_args, state, here)
     if command == "batch":
         from workflows import batch_plan, batch_show, batch_run, batch_control
         if args.action == "plan": return batch_plan(store, state, args.file)

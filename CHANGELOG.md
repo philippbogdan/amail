@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1
+
+- Read native editor text from one document range so rich replies containing tables and repeated accessibility labels pass complete-selection verification.
+- Keep the real subject, including reply prefixes, visible throughout composition. Stop before touching an already-open compose window with the same subject.
+- Add `draft send --retry-rejected` for retrying an unchanged draft after a confirmed rejection, preserving its request ID and unknown-outcome safeguards.
+
 ## 0.3.0
 
 - Use Mail's editor for native message bodies and attachments, avoiding the scripted compose path that wrapped new text as a quotation. Native sends now require Accessibility access for the invoking host and briefly show their own compose window.
