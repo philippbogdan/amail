@@ -20,6 +20,10 @@ These are small-sample development observations. They are not latency, server co
 
 ## Automated checks
 
+Formatting checks inspect the MIME structure as well as rendered text. Reads expose `body_format` and warnings for Apple Mail's shared-content wrapper and fully quoted HTML bodies. The plain alternative retains its actual quote markers. New-send verification compares the plain body with the requested text, preserving leading whitespace and paragraph boundaries while normalising transport line endings. A failed verification pauses batches and retains the existing no-resend safeguard.
+
+Earlier content checks removed Apple's quote wrapper and allowed whitespace reflow. Those historical checks did not establish correct message formatting. This verification change alone does not repair Mail's scripted composer or previously delivered messages.
+
 The standard-library suite covers read-only SQL access, Gmail labels, literal filenames and search, stale refs, MIME transfer encodings, Unicode, unavailable attachments, filename collisions, nested attached messages, immutable drafts and plans, configured pacing, concurrency, suppression, correlated feedback and crash recovery. CI uses synthetic fixtures and makes no email requests.
 
 The release checks also exercise isolated installation, config migration and reuse of existing credential storage. A working fixture suite does not establish a new provider or macOS version as supported; live validation on that surface is separate.

@@ -74,7 +74,7 @@ def load_message(store, ref, state, here, *, fetch=False):
     if not fetch and not ref.startswith("gmail:"):
         return store.read(ref)
     message, provenance = server_message(store, ref, state, here)
-    from local_store import body_available
+    from local_store import body_available, body_format, format_warnings
     parts = attachment_parts(message, state / "0.emlx")
     item = {} if ref.startswith("gmail:") else store.item(store.locate(ref))
     item.update({"ref":ref,"from":str(message.get("From","")),"to":str(message.get("To","")),"cc":str(message.get("Cc","")),
@@ -82,6 +82,8 @@ def load_message(store, ref, state, here, *, fetch=False):
         "body_available":body_available(message),"reply_to":str(message.get("Reply-To","")),
         "references":str(message.get("References","")),"in_reply_to":str(message.get("In-Reply-To","")),
         "attachments":[{k:v for k,v in p.items() if not k.startswith("_")} for p in parts],"attachments_complete":all(p["available"] for p in parts)})
+    item["body_format"] = body_format(message)
+    item["warnings"] = [type(d).__name__ for d in message.defects] + format_warnings(item["body_format"])
     item.update(provenance)
     if provenance.get("provider") == "gmail":
         item.update(read="UNREAD" not in provenance["labels"],flagged="STARRED" in provenance["labels"],server_freshness="queried now")

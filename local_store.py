@@ -57,19 +57,33 @@ class TextHTML(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.bits = []
         self.hidden = 0
+        self.quote_depth = 0
+        self.quoted_characters = 0
+        self.unquoted_characters = 0
+        self.apple_share_wrapper = False
     def handle_starttag(self, tag, attrs):
-        if tag in {"script", "style"}:
+        if tag == "blockquote":
+            self.quote_depth += 1
+        if "Apple-Mail-URLShareWrapperClass" in dict(attrs).get("class", "").split():
+            self.apple_share_wrapper = True
+        if tag in {"script", "style", "head"}:
             self.hidden += 1
         if tag in {"br", "p", "div", "li", "tr", "td", "h1", "h2", "h3"}:
             self.bits.append("\n")
     def handle_endtag(self, tag):
-        if tag in {"script", "style"}:
+        if tag == "blockquote":
+            self.quote_depth = max(0, self.quote_depth - 1)
+        if tag in {"script", "style", "head"}:
             self.hidden = max(0, self.hidden - 1)
         if tag in {"p", "div", "li", "tr", "td"}:
             self.bits.append("\n")
     def handle_data(self, data):
         if not self.hidden:
             self.bits.append(data)
+            if self.quote_depth:
+                self.quoted_characters += len(data.strip())
+            else:
+                self.unquoted_characters += len(data.strip())
 
 
 def parse_emlx(path):
@@ -95,18 +109,39 @@ def decoded(part):
         return payload.decode("utf-8", errors="replace")
 
 
+def wire_body(body):
+    """Normalise transport line endings, never leading space or paragraph layout."""
+    return body.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
+
+
+def body_format(msg):
+    """Expose MIME structure separately from the convenient text rendering."""
+    plain = msg.get_body(preferencelist=("plain",))
+    parser = TextHTML()
+    for _, part in mime_parts(msg):
+        if part.get_content_type() == "text/html" and part.get_content_disposition() != "attachment" and not part.get_filename():
+            parser.feed(decoded(part))
+    text = decoded(plain) if plain is not None else None
+    return {
+        "plain_body_hash": hashlib.sha256(wire_body(text).encode()).hexdigest() if text is not None else None,
+        "plain_leading_blank_lines": len(text.replace("\r\n", "\n")) - len(text.replace("\r\n", "\n").lstrip("\n")) if text is not None else None,
+        "apple_share_wrapper": parser.apple_share_wrapper,
+        "html_entire_body_quoted": parser.quoted_characters > 0 and parser.unquoted_characters == 0,
+    }
+
+
+def format_warnings(details):
+    warnings = []
+    if details["apple_share_wrapper"]:
+        warnings.append("Apple Mail wrapped this message as shared content; clients may display or collapse it as a quotation")
+    if details["html_entire_body_quoted"]:
+        warnings.append("The entire visible HTML body is inside a quotation")
+    return warnings
+
+
 def message_text(msg):
-    # Mail's compose backend sometimes creates an alternative containing several
-    # HTML fragments around inline attachments. Its generated text alternative
-    # contains quote markers and object placeholders that are absent on screen.
-    # Render that complete HTML alternative, rather than only its first fragment.
-    fragments = [decoded(p) for _, p in mime_parts(msg)
-                 if p.get_content_type() == "text/html" and p.get_content_disposition() != "attachment"]
-    if any("Apple-Mail-URLShareWrapperClass" in text for text in fragments):
-        parser = TextHTML()
-        for text in fragments:
-            parser.feed(text)
-        return re.sub(r"\n{3,}", "\n\n", "".join(parser.bits)).strip()
+    # Quote markers in a text alternative are message content. Never hide them
+    # by preferring a stripped HTML alternative, especially during verification.
     part = msg.get_body(preferencelist=("plain", "html"))
     if part is None:
         return ""
@@ -388,11 +423,13 @@ class Store:
         item = self.item(row)
         body = message_text(msg)
         available = body_available(msg)
+        formatting = body_format(msg)
         item.update({"to":str(msg.get("To","")),"cc":str(msg.get("Cc","")),"message_id":str(msg.get("Message-ID","")),
                      "reply_to":str(msg.get("Reply-To","")),"references":str(msg.get("References","")),"in_reply_to":str(msg.get("In-Reply-To","")),"body":body,
                      "body_available":available,"storage_partial":path.name.endswith(".partial.emlx"),"attachments_complete":all(p["available"] for p in parts),
                      "attachments":[{k:v for k,v in p.items() if not k.startswith("_")} for p in parts],"file":str(path),
-                     "warnings":[type(d).__name__ for d in msg.defects]})
+                     "body_format":formatting,
+                     "warnings":[type(d).__name__ for d in msg.defects] + format_warnings(formatting)})
         return item, parts
 
     def extract(self, ref, output):

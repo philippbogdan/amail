@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Preserve quote markers in plain-text alternatives instead of concealing Mail's shared-content wrapper during reads.
+- Report MIME formatting diagnostics and reject full-body HTML quotations, added leading blank lines and paragraph changes during new-send verification.
+- Keep a batch paused on a formatting verification failure without resending the ambiguous message on resume.
+
 ## 0.2.1
 
 - Restrict field projection to reading commands so output-field errors cannot obscure a completed send or mailbox change.

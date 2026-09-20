@@ -13,7 +13,7 @@ import tempfile
 import time
 import uuid
 from urllib.parse import urlsplit
-from local_store import MailError, parse_emlx
+from local_store import MailError, parse_emlx, wire_body
 
 
 def normal_body(body):
@@ -141,6 +141,7 @@ def prepare(store,args,state=None,here=None):
         attachments.append(description)
     verification={"account":account["uuid"],"sender":sender,"subject":args.subject,"body_hash":digest(normal_body(body)),"display_body_hash":digest(display_body(body)),
                   "to":sorted(request["to"]),"cc":sorted(request["cc"]),"bcc":sorted(request["bcc"]),"attachments":attachments}
+    verification.update(body_format_version=1, wire_body_hash=digest(wire_body(body)))
     if request.get("in_reply_to"):
         verification["in_reply_to"] = request["in_reply_to"]
     fingerprint=digest(json.dumps([request,attachments],sort_keys=True))
@@ -156,13 +157,19 @@ def update(state,request_id,result):
 
 
 def matches_content(store,item,parts,verification):
+    formatting = item.get("body_format", {})
+    if formatting.get("apple_share_wrapper") or formatting.get("html_entire_body_quoted"):
+        return False
+    if verification.get("body_format_version"):
+        if formatting.get("plain_body_hash") != verification["wire_body_hash"]:
+            return False
     to=sorted(canonical_address(store,a) for _,a in email.utils.getaddresses([item["to"]]) if a)
     cc=sorted(canonical_address(store,a) for _,a in email.utils.getaddresses([item["cc"]]) if a)
     expected_to=sorted(canonical_address(store,a) for a in verification["to"])
     expected_cc=sorted(canonical_address(store,a) for a in verification["cc"])
     exact_body=digest(normal_body(item["body"]))==verification["body_hash"]
     reflowed=digest(display_body(item["body"]))==verification.get("display_body_hash")
-    if to!=expected_to or cc!=expected_cc or not (exact_body or reflowed):
+    if to!=expected_to or cc!=expected_cc or not (exact_body or (not verification.get("body_format_version") and reflowed)):
         return False
     if verification.get("in_reply_to") and item.get("in_reply_to") != verification["in_reply_to"]:
         return False
