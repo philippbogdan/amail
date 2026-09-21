@@ -40,6 +40,7 @@ def script(request, operation, here, path, deadline):
     valid = (operation == 'compose' and type(reply.get('outgoing_id')) is int
              or operation == 'prepare' and reply.get('stage') == 'prepared'
              or operation == 'discard' and reply.get('stage') == 'discarded'
+             or operation == 'close_stale' and reply.get('stage') == 'closed_stale'
              or operation == 'submit' and type(reply.get('mail_send_result')) is bool)
     if not valid:
         raise ProviderError('Mail returned an incomplete operation result', uncertain=operation == 'submit')
@@ -124,3 +125,17 @@ def submit(store, request, verification, state, here, timeout, *, prepared=None,
     except (MailError, OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
         raise ProviderError(str(exc) if not attempted else 'Native submission interrupted; reconcile before any retry',
                             uncertain=attempted) from exc
+
+
+def close_stale_window(verification, state, here):
+    """Best effort: close the compose window a dead process left for a request proven unsent."""
+    request = {'sender': verification['sender'], 'formatted_sender': verification['sender'],
+               'account_id': verification['account'], 'subject': verification['subject'],
+               'compose_title': verification['subject'], 'to': [], 'cc': [], 'bcc': [],
+               'draft_message_id': verification.get('draft_message_id') or ''}
+    try:
+        state.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with tempfile.TemporaryDirectory(prefix='stale-', dir=state) as directory:
+            return script(request, 'close_stale', here, Path(directory) / 'request.json', time.monotonic() + 15).get('closed', 0)
+    except Exception:
+        return None

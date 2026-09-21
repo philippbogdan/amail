@@ -79,6 +79,8 @@ amail send --from you@company.example --to colleague@example.org \
 
 To, CC and BCC accept plain addresses. `send` also supports `--name`, `--timeout`, `--purpose personal|outreach` and `--cap` for an additional stricter recipient cap. Draft revisions invalidate prior review. Identical request IDs do not send twice; using one with changed content is rejected. `--retry-rejected` is an explicit retry of a definitive rejection, never an ambiguous outcome.
 
+`amail status REQUEST_ID` reconciles any request that did not finish `accepted`: it becomes `accepted` once Mail has filed the Sent copy, or `rejected` when the evidence shows nothing was sent (the process died before a draft was prepared, or the prepared draft still sits unsent in Drafts two minutes later; a compose window that process left open is closed). Only a death after submission had started stays `outcome_unknown`, and that state blocks further sends from the account until you have checked Mail yourself.
+
 ## Reply and forward
 
 ```sh

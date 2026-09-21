@@ -50,6 +50,8 @@ Every account now sends through Mail's own compose window; the Gmail API send ro
 
 Acceptance no longer depends on Exchange server metadata that Mail syncs hours later, nor on a one-hour reconciliation window: a Sent copy filed by Mail with nothing queued in an Outbox is accepted, and reconciliation uses the request time. On this Mac a previous 0.3.1 send stuck at `provider_acceptance_unverified`, which blocked the account, reconciled to `accepted` with the new rule.
 
+An independent adversarial pass then drove the working tree black-box between the same accounts (about twenty delivered messages: Unicode subjects, leading spaces, a first line starting with `> `, long paragraphs, alias senders, cross-account replies, concurrent sends, request-id replays) and found five defects, all fixed and re-tested live: image attachments were refused and a process could abort on an image element's accessibility value; an empty body left a compose window open; a `reply_to_ref` draft lost its `Re:` prefix; `draft update` rejected the `draft show` envelope; and a process that died before submitting blocked its account permanently.
+
 Live checks on macOS 27.0 with Mail 16.0 between the maintainer's own Gmail and Exchange accounts: a new Exchange message with an attachment, a Gmail reply through Mail, an Exchange forward carrying the original attachment, and an Exchange reply to a rich message with an institutional banner. Every sent and delivered copy began with the requested text, had no leading blank line or share wrapper, carried Mail's own quoted history below the text, and was accepted within about three seconds. 106 fixture tests pass.
 
 ## Public packaging checks

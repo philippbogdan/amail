@@ -54,6 +54,27 @@ on run argv
                 end if
                 return "{\"outgoing_id\":" & (id of outgoing) & ",\"stage\":\"composed\"}"
             end if
+            if operation is "close_stale" then
+                -- A previous amail process died mid-submission and left its window
+                -- open. Called only after that request was proven unsent.
+                set closed to 0
+                -- Iterate by id: Mail cannot index "every outgoing message" directly.
+                repeat with candidateID in (get id of every outgoing message)
+                    set candidate to outgoing message id (candidateID as integer)
+                    if (subject of candidate) is subjectText then
+                        delete candidate
+                        set closed to closed + 1
+                    end if
+                end repeat
+                -- The unsent draft that proved nothing was sent is clutter now.
+                set draftID to my normalID((q's objectForKey:"draft_message_id") as text)
+                if draftID is not "" then
+                    repeat with candidate in (messages of drafts mailbox whose subject is subjectText)
+                        if my normalID(message id of candidate) is draftID then delete candidate
+                    end repeat
+                end if
+                return "{\"stage\":\"closed_stale\",\"closed\":" & closed & "}"
+            end if
             set theStage to operation
             set outgoing to outgoing message id ((q's objectForKey:"outgoing_id") as integer)
             if operation is "discard" then

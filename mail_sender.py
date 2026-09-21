@@ -459,6 +459,11 @@ def status(request_id,state,store):
             reason = never_submitted(store, verification) if not result.get("mail_script", {}).get("mail_send_result") else None
             if reason:
                 result.update(state="rejected", error=reason + "; nothing was sent, so this request may be retried")
+                if "still unsent" in reason:
+                    from native_transport import close_stale_window
+                    closed = close_stale_window(verification, state, Path(__file__).resolve().parent)
+                    if closed:
+                        result["closed_stale_windows"] = closed
             elif result["state"] == "submitting":
                 result.update(state="outcome_unknown", error="The submitting process exited; do not resend without reconciliation")
             update(state,request_id,result)
