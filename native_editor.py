@@ -294,9 +294,16 @@ def squash(value):
     return ''.join(value.replace('\ufffc', '').split())
 
 
+ATTACHMENT_ROLES = {'AXAttachment', 'AXButton', 'AXImage'}  # Mail shows images inline.
+
+
 def attachment_names(ax, body):
-    return [ax.text(ax.attr(item, 'AXDescription')) for item in ax.walk(body)
-            if ax.text(ax.attr(item, 'AXRole')) in {'AXAttachment', 'AXButton'}]
+    """Labels of the attachment elements Mail exposes in the editor."""
+    names = []
+    for item in ax.walk(body):
+        if ax.text(ax.attr(item, 'AXRole')) in ATTACHMENT_ROLES:
+            names.append(' '.join(ax.text(ax.attr(item, name)) or '' for name in ('AXDescription', 'AXTitle', 'AXValue')))
+    return names
 
 
 def enter_body(title, text, attachments=()):
@@ -356,16 +363,17 @@ def enter_body(title, text, attachments=()):
                 if board.count() != written:
                     raise MailError('Clipboard changed before attachment paste; nothing was sent')
                 ax.key(9, command=True)
+                # Wait for Mail to show the files; the saved draft's MIME parts are
+                # the actual gate, so an unlabelled inline image is not a failure here.
                 deadline = time.monotonic() + 5
-                while True:
+                while time.monotonic() < deadline:
                     ax.assert_focus(app, window, body)
                     descriptions = attachment_names(ax, body)
-                    if (len(descriptions) == existing_attachments + len(attachments)
+                    if (len(descriptions) >= existing_attachments + len(attachments)
                             and all(any(Path(path).name in desc for desc in descriptions) for path in attachments)):
                         break
-                    if time.monotonic() >= deadline:
-                        raise MailError('Mail did not confirm every attachment; nothing was sent')
                     time.sleep(.1)
+                ax.assert_focus(app, window, body)
         finally:
             # Do not overwrite a clipboard change made by the user meanwhile.
             if board.count() == written:

@@ -52,6 +52,7 @@ def prepare_native(store, request, verification, state, here, path, deadline):
     ensure_subject_available(request['subject'])
     before = {row['id'] for row in store.query(account=request['account_id'], mailbox='drafts',
                                               subject=request['subject'], limit=10000)}
+    request['known_drafts'] = sorted(before)  # discard may sweep Mail's autosaved copy of our window
     composed = script(request, 'compose', here, path, deadline)
     request['outgoing_id'] = composed['outgoing_id']
     try:
@@ -80,7 +81,7 @@ def prepare_native(store, request, verification, state, here, path, deadline):
 
 
 def discard(request, here, path):
-    """Best effort: close amail's own unsent compose window so nothing lingers."""
+    """Best effort: close amail's own unsent compose window and remove Mail's autosaved copy of it."""
     try:
         script(request, 'discard', here, path, time.monotonic() + 15)
     except Exception:

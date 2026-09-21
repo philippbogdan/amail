@@ -1,7 +1,7 @@
 """WebKit can expose duplicate accessibility children for a single banner."""
 import unittest
 from unittest.mock import patch
-from native_editor import Accessibility, ensure_subject_available
+from native_editor import Accessibility, ensure_subject_available, attachment_names
 from local_store import MailError
 
 
@@ -50,3 +50,15 @@ class NativeEditorTextTests(unittest.TestCase):
             ensure_subject_available('Re: A discussion')
             ax.attr.assert_not_called()
             ax.close.assert_called_once()
+
+    def test_inline_images_count_as_attachments(self):
+        ax = Accessibility.__new__(Accessibility)
+        ax.walk = lambda body: ['text', 'image', 'file']
+        values = {('text', 'AXRole'): 'AXStaticText', ('image', 'AXRole'): 'AXImage', ('file', 'AXRole'): 'AXAttachment',
+                  ('image', 'AXDescription'): None, ('image', 'AXTitle'): 'diagram.png', ('file', 'AXDescription'): 'notes.txt'}
+        ax.attr = lambda node, name: values.get((node, name))
+        ax.text = lambda value: value or ''
+        names = attachment_names(ax, 'editor')
+        self.assertEqual(len(names), 2)
+        self.assertTrue(any('diagram.png' in name for name in names))
+        self.assertTrue(any('notes.txt' in name for name in names))

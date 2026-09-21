@@ -53,10 +53,23 @@ on run argv
             end if
             set outgoing to outgoing message id ((q's objectForKey:"outgoing_id") as integer)
             if operation is "discard" then
-                -- Close amail's own compose window without saving, so a failed
-                -- preparation never leaves a stray draft or window behind.
+                -- Close amail's own compose window without saving, then remove the
+                -- copy Mail may have autosaved into Drafts meanwhile. Only drafts
+                -- of this account with this subject that did not exist before
+                -- composition began are touched.
                 delete outgoing
-                return "{\"stage\":\"discarded\"}"
+                set knownDrafts to (q's objectForKey:"known_drafts") as list
+                set swept to 0
+                repeat 4 times
+                    repeat with candidate in (messages of drafts mailbox whose subject is subjectText)
+                        if (id of candidate) is not in knownDrafts and (id of account of mailbox of candidate) is accountID then
+                            delete candidate
+                            set swept to swept + 1
+                        end if
+                    end repeat
+                    delay 0.5
+                end repeat
+                return "{\"stage\":\"discarded\",\"swept_drafts\":" & swept & "}"
             end if
             if operation is "prepare" then
                 set theStage to "prepare-recipients"
