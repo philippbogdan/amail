@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import test_mail as fixtures
-from local_store import body_format, message_text
+from local_store import body_format, message_text, MailError
 from mail_sender import matches_content, prepare, send
 
 
@@ -59,6 +59,20 @@ class FormattingTests(unittest.TestCase):
         item['body'] = requested
         self.assertFalse(matches_content(self.store, item, parts, verification))
 
+    def test_native_reply_allows_share_wrapper_only_in_quoted_history(self):
+        requested = 'A new reply.\n\nSam'
+        html = ('<body>A new reply.<br><br>Sam<br><br><blockquote type="cite">'
+                '<div class="Apple-Mail-URLShareWrapperClass">Old message</div>'
+                '</blockquote></body>')
+        item, parts = self.put('', html)
+        verification = prepare(self.store, self.args(body=requested))[2]
+        self.assertFalse(item['body_format']['apple_share_wrapper'])
+        self.assertTrue(matches_content(self.store, item, parts, verification, draft=True))
+        wrapped_new = ('<body><blockquote><div class="Apple-Mail-URLShareWrapperClass">'
+                       'A new reply.<br><br>Sam</div></blockquote></body>')
+        item, parts = self.put('', wrapped_new)
+        self.assertFalse(matches_content(self.store, item, parts, verification, draft=True))
+
     def test_clean_plain_and_html_alternatives_pass(self):
         text = 'Hi Alex,\n\nCafé & <angle>.\n\nSam'
         self.assertTrue(self.verifies(text, text,
@@ -69,9 +83,47 @@ class FormattingTests(unittest.TestCase):
         self.assertEqual(item['body'], 'Body')
         verification = prepare(self.store, self.args(body='Body'))[2]
         self.assertTrue(matches_content(self.store, item, parts, verification, draft=True))
-        self.assertFalse(matches_content(self.store, item, parts, verification))
+        self.assertFalse(matches_content(self.store, item, parts, prepare(self.store, self.args(body='Other'))[2], draft=True))
         item['bcc'] = 'unexpected@example.net'
         self.assertFalse(matches_content(self.store, item, parts, verification, draft=True))
+
+    def test_native_reply_keeps_mail_quoted_history_below_the_text(self):
+        # Mail's own reply window: the entered text, then its attribution line and quote.
+        requested = 'Hi Alex,\n\nThanks, that works.\n\nSam'
+        plain = requested + '\n\n> On 20 Sep 2026, at 12:02, Alex <alex@example.net> wrote:\n> \n> Original paragraph.\n> \n'
+        html = ('<html><body><div>Hi Alex,</div><div><br></div><div>Thanks, that works.</div><div><br></div><div>Sam</div>'
+                '<div><br></div><div>On 20 Sep 2026, at 12:02, Alex &lt;alex@example.net&gt; wrote:</div><blockquote type="cite">'
+                '<div>Original paragraph.</div></blockquote></body></html>')
+        self.assertTrue(self.verifies(requested, plain, html))
+        # The same history above the text, or text that only appears inside the quote, is not a reply amail wrote.
+        self.assertFalse(self.verifies(requested, '> Original paragraph.\n\n' + requested))
+        self.assertFalse(self.verifies(requested, '\n' + plain))
+        self.assertFalse(self.verifies(requested, plain.replace('Thanks, that works.', 'Thanks, that fails.')))
+        self.assertFalse(self.verifies('Hi Alex,\n\nThanks', plain))  # a partial paragraph is not a prefix match
+
+    def test_signature_below_the_text_is_allowed(self):
+        self.assertTrue(self.verifies('Body', 'Body\n\n--\nSam Example\n'))
+        self.assertFalse(self.verifies('Body', 'Body extra words'))
+
+    def test_forward_may_carry_the_original_attachments(self):
+        item, parts = self.put('For context.\n\nBegin forwarded message:\n\nFrom: alex@example.net\n\nOriginal.', None)
+        verification = prepare(self.store, self.args(body='For context.'))[2]
+        parts = [{'available': True, '_path': None, '_payload': b'original bytes', 'type': 'application/octet-stream', 'name': 'original.bin'}]
+        self.assertFalse(matches_content(self.store, item, parts, verification))
+        verification['conversation'] = 'forward'
+        self.assertTrue(matches_content(self.store, item, parts, verification))
+
+    def test_failed_preparation_discards_the_compose_window(self):
+        from native_transport import prepare_native
+        operations = []
+        def fake_script(request, operation, *args):
+            operations.append(operation)
+            return {'outgoing_id': 7, 'stage': 'composed'} if operation == 'compose' else {'stage': operation + 'ed'}
+        with patch('native_transport.script', side_effect=fake_script), patch('native_editor.ensure_subject_available'), \
+             patch('native_editor.enter_body', side_effect=MailError('Mail did not place the text at the top of the body')):
+            with self.assertRaises(MailError):
+                prepare_native(self.store, {'subject': 'Test', 'body': 'Body', 'attach': [], 'account_id': 'GMAIL', 'sender': 'owner@example.com'}, {}, self.base, self.base, self.base / 'request.json', time.monotonic() + 5)
+        self.assertEqual(operations, ['compose', 'discard'])
 
     def test_empty_plain_draft_fallback_keeps_quote_semantics(self):
         item, _ = self.put('', '<blockquote>Body</blockquote>')

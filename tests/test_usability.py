@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 import test_mail as fixtures
 from cli import parser, run, project
+from local_store import MailError
 from workflows import batch_plan, batch_summary, input_schema
 from mail_sender import ledger
 
@@ -51,9 +52,31 @@ class UsabilityTests(unittest.TestCase):
         self.assertFalse(self.store.query()[0]['read'])
 
     def test_status_without_id_is_diagnostics(self):
-        with patch('gmail_backend.Gmail.profile', return_value={'emailAddress': 'owner@example.com'}):
+        with patch('gmail_backend.Gmail.profile', return_value={'emailAddress': 'owner@example.com'}), \
+             patch('mail_operations.bridge', return_value={'automation_access': True}), \
+             patch('native_editor.Accessibility') as access:
+            access.return_value.ax.AXIsProcessTrusted.return_value = True
             result = self.execute('status')
-        self.assertEqual(result[0]['send_route'], 'gmail_api')
+        self.assertEqual(result[0]['send_route'], 'mail_editor')
+        self.assertEqual(result[0]['gmail_api_reads'], 'available')
+        self.assertTrue(result[0]['editor_accessibility'])
+
+    def test_expired_gmail_token_does_not_block_sending_diagnostics(self):
+        with patch('gmail_backend.Gmail.profile', side_effect=MailError('Gmail token refresh failed; run amail connect')), \
+             patch('mail_operations.bridge', return_value={'automation_access': True}), \
+             patch('native_editor.Accessibility') as access:
+            access.return_value.ax.AXIsProcessTrusted.return_value = True
+            result = self.execute('status')
+        self.assertEqual(result[0]['send_route'], 'mail_editor')
+        self.assertEqual(result[0]['gmail_api_reads'], 'unavailable')
+        self.assertNotIn('connection_error', result[0])
+
+    def test_unknown_flags_are_not_prefix_matched(self):
+        with self.assertRaises(SystemExit):
+            parser().parse_args(['search', '--since', '2026-09-18'])
+        args = parser().parse_args(['sent', '--after', '2026-09-18', '--before', '2026-09-19', '--limit', '5'])
+        self.assertEqual(args.limit, 5)
+        self.assertEqual(parser().parse_args(['attachment', 'mail:GMAIL:1:abc']).command, 'attachment')
 
     def test_schema_works_with_no_configuration_or_mail_access(self):
         from pathlib import Path

@@ -14,14 +14,17 @@ on run argv
     set ccAddresses to (q's objectForKey:"cc") as list
     set bccAddresses to (q's objectForKey:"bcc") as list
     set theStage to "compose"
+    set composed to missing value
     try
         tell application "Mail"
             set sendingAccount to first account whose id is accountID
             if senderAddress is not in (email addresses of sendingAccount) then error "Sender is not configured on the selected account"
             if operation is "compose" then
                 set replySource to q's objectForKey:"reply_source"
+                if replySource is missing value then set replySource to q's objectForKey:"forward_source"
                 if replySource is missing value then
                     set outgoing to make new outgoing message with properties {sender:senderText, subject:marker, visible:true}
+                    set composed to outgoing
                 else
                     set sourceAccount to first account whose id is ((replySource's objectForKey:"account") as text)
                     set sourcePath to (replySource's objectForKey:"mailbox") as text
@@ -35,8 +38,14 @@ on run argv
                             if my normalID(message id of item 1 of candidates) is my normalID(expectedID) then set originalMessage to item 1 of candidates
                         end if
                     end repeat
-                    if originalMessage is missing value then error "The original reply message is unavailable or changed"
-                    set outgoing to reply originalMessage with opening window
+                    if originalMessage is missing value then error "The original message is unavailable or changed"
+                    -- Mail builds the quoted history, attribution line and thread headers itself.
+                    if (replySource's objectForKey:"kind") as text is "forward" then
+                        set outgoing to forward originalMessage with opening window
+                    else
+                        set outgoing to reply originalMessage with opening window
+                    end if
+                    set composed to outgoing
                     set sender of outgoing to senderText
                     set subject of outgoing to marker
                     delete every to recipient of outgoing
@@ -45,7 +54,65 @@ on run argv
                 end if
                 return "{\"outgoing_id\":" & (id of outgoing) & ",\"stage\":\"composed\"}"
             end if
+            if operation is "close_stale" then
+                -- A previous amail process died mid-submission and left its window
+                -- open. Called only after that request was proven unsent.
+                set closed to 0
+                -- Iterate by id: Mail cannot index "every outgoing message" directly.
+                repeat with candidateID in (get id of every outgoing message)
+                    set candidate to outgoing message id (candidateID as integer)
+                    if (subject of candidate) is subjectText then
+                        delete candidate
+                        set closed to closed + 1
+                    end if
+                end repeat
+                -- The unsent draft that proved nothing was sent is clutter now.
+                set draftID to my normalID((q's objectForKey:"draft_message_id") as text)
+                if draftID is not "" then
+                    repeat with candidateID in my draftIDs(subjectText)
+                        set candidate to first message of drafts mailbox whose id is (candidateID as integer)
+                        if my normalID(message id of candidate) is draftID then delete candidate
+                    end repeat
+                end if
+                return "{\"stage\":\"closed_stale\",\"closed\":" & closed & "}"
+            end if
+            set theStage to operation
             set outgoing to outgoing message id ((q's objectForKey:"outgoing_id") as integer)
+            if operation is "discard" then
+                -- Close amail's own compose window without saving, then remove the
+                -- copy Mail may have autosaved into Drafts meanwhile. Only drafts
+                -- of this account with this subject that did not exist before
+                -- composition began are touched.
+                delete outgoing
+                set knownDrafts to (q's objectForKey:"known_drafts") as list
+                set sweptIDs to {}
+                set swept to 0
+                set quietPasses to 0
+                -- Mail files the autosaved copy a few seconds after the window closes.
+                repeat 20 times
+                    set found to 0
+                    repeat with candidateID in my draftIDs(subjectText)
+                        set candidateID to candidateID as integer
+                        if candidateID is not in knownDrafts and candidateID is not in sweptIDs then
+                            set candidate to first message of drafts mailbox whose id is candidateID
+                            if (id of account of mailbox of candidate) is accountID then
+                                delete candidate
+                                set end of sweptIDs to candidateID
+                                set swept to swept + 1
+                                set found to found + 1
+                            end if
+                        end if
+                    end repeat
+                    if found is 0 then
+                        set quietPasses to quietPasses + 1
+                    else
+                        set quietPasses to 0
+                    end if
+                    if swept > 0 and quietPasses ≥ 2 then exit repeat
+                    delay 0.5
+                end repeat
+                return "{\"stage\":\"discarded\",\"swept_drafts\":" & swept & "}"
+            end if
             if operation is "prepare" then
                 set theStage to "prepare-recipients"
                 if subject of outgoing is not marker then error "Compose identity changed"
@@ -78,7 +145,13 @@ on run argv
             return "{\"mail_send_result\":false,\"engine\":\"mail_editor\"}"
         end tell
     on error errorText number errorNumber
-        return "{\"stage\":\"" & theStage & "\",\"error_number\":" & errorNumber & "}"
+        if composed is not missing value then
+            -- Never leave a half-composed window behind when composition itself failed.
+            try
+                tell application "Mail" to delete composed
+            end try
+        end if
+        return "{\"stage\":\"" & theStage & "\",\"error_number\":" & errorNumber & ",\"error_text\":\"" & my jsonText(errorText) & "\"}"
     end try
 end run
 
@@ -86,3 +159,23 @@ on normalID(value)
     set valueString to current application's NSString's stringWithString:value
     return (valueString's stringByTrimmingCharactersInSet:(current application's NSCharacterSet's characterSetWithCharactersInString:"<> ")) as text
 end normalID
+
+on jsonText(value)
+    set valueString to current application's NSString's stringWithString:(value as text)
+    set valueString to valueString's stringByReplacingOccurrencesOfString:"\\" withString:"\\\\"
+    set valueString to valueString's stringByReplacingOccurrencesOfString:"\"" withString:"\\\""
+    set valueString to valueString's stringByReplacingOccurrencesOfString:linefeed withString:" "
+    set valueString to valueString's stringByReplacingOccurrencesOfString:return withString:" "
+    return valueString as text
+end jsonText
+
+on draftIDs(subjectText)
+    -- Mail refuses to index a filtered message list directly; collect ids first.
+    tell application "Mail"
+        try
+            return (get id of (messages of drafts mailbox whose subject is subjectText))
+        on error
+            return {}
+        end try
+    end tell
+end draftIDs

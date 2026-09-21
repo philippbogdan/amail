@@ -34,10 +34,13 @@ def script(request, operation, here, path, deadline):
         if watch:
             watch.close()
     if 'error_number' in reply:
-        raise ProviderError('Mail refused ' + reply.get('stage', operation) + ' (error ' + str(reply['error_number']) + ')',
-                            uncertain=reply.get('stage') == 'send')
+        detail = reply.get('error_text')
+        raise ProviderError('Mail refused ' + reply.get('stage', operation) + ' (error ' + str(reply['error_number']) + ')'
+                            + (': ' + detail if detail else ''), uncertain=reply.get('stage') == 'send')
     valid = (operation == 'compose' and type(reply.get('outgoing_id')) is int
              or operation == 'prepare' and reply.get('stage') == 'prepared'
+             or operation == 'discard' and reply.get('stage') == 'discarded'
+             or operation == 'close_stale' and reply.get('stage') == 'closed_stale'
              or operation == 'submit' and type(reply.get('mail_send_result')) is bool)
     if not valid:
         raise ProviderError('Mail returned an incomplete operation result', uncertain=operation == 'submit')
@@ -51,27 +54,40 @@ def prepare_native(store, request, verification, state, here, path, deadline):
     ensure_subject_available(request['subject'])
     before = {row['id'] for row in store.query(account=request['account_id'], mailbox='drafts',
                                               subject=request['subject'], limit=10000)}
+    request['known_drafts'] = sorted(before)  # discard may sweep Mail's autosaved copy of our window
     composed = script(request, 'compose', here, path, deadline)
     request['outgoing_id'] = composed['outgoing_id']
-    enter_body(request['compose_title'], request['body'], request['attach'])
-    script(request, 'prepare', here, path, deadline)
-    while time.monotonic() < deadline:
-        matched = {}
-        for row in store.query(account=request['account_id'], mailbox='drafts', subject=request['subject'], limit=200):
-            if row['id'] in before or row['subject'] != request['subject']:
-                continue
-            try:
-                item, parts = store.read(store.ref(row))
-            except (MailError, OSError):
-                continue
-            if canonical_address(store, row['address'] or '') != canonical_address(store, request['sender']):
-                continue
-            if matches_content(store, item, parts, verification, draft=True) and item.get('message_id'):
-                matched[item['message_id']] = item
-        if len(matched) == 1:
-            return next(iter(matched.values()))
-        time.sleep(.1)
-    raise MailError('The saved Mail draft did not match the reviewed body, recipients, threading and attachments; nothing was sent')
+    try:
+        enter_body(request['compose_title'], request['body'], request['attach'])
+        script(request, 'prepare', here, path, deadline)
+        while time.monotonic() < deadline:
+            matched = {}
+            for row in store.query(account=request['account_id'], mailbox='drafts', subject=request['subject'], limit=200):
+                if row['id'] in before or row['subject'] != request['subject']:
+                    continue
+                try:
+                    item, parts = store.read(store.ref(row))
+                except (MailError, OSError):
+                    continue
+                if canonical_address(store, row['address'] or '') != canonical_address(store, request['sender']):
+                    continue
+                if matches_content(store, item, parts, verification, draft=True) and item.get('message_id'):
+                    matched[item['message_id']] = item
+            if len(matched) == 1:
+                return next(iter(matched.values()))
+            time.sleep(.1)
+        raise MailError('The saved Mail draft did not match the reviewed body, recipients, threading and attachments; nothing was sent')
+    except BaseException:
+        discard(request, here, path)
+        raise
+
+
+def discard(request, here, path):
+    """Best effort: close amail's own unsent compose window and remove Mail's autosaved copy of it."""
+    try:
+        script(request, 'discard', here, path, time.monotonic() + 15)
+    except Exception:
+        pass
 
 
 def submit(store, request, verification, state, here, timeout, *, prepared=None, prepare_only=False):
@@ -109,3 +125,17 @@ def submit(store, request, verification, state, here, timeout, *, prepared=None,
     except (MailError, OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
         raise ProviderError(str(exc) if not attempted else 'Native submission interrupted; reconcile before any retry',
                             uncertain=attempted) from exc
+
+
+def close_stale_window(verification, state, here):
+    """Best effort: close the compose window a dead process left for a request proven unsent."""
+    request = {'sender': verification['sender'], 'formatted_sender': verification['sender'],
+               'account_id': verification['account'], 'subject': verification['subject'],
+               'compose_title': verification['subject'], 'to': [], 'cc': [], 'bcc': [],
+               'draft_message_id': verification.get('draft_message_id') or ''}
+    try:
+        state.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with tempfile.TemporaryDirectory(prefix='stale-', dir=state) as directory:
+            return script(request, 'close_stale', here, Path(directory) / 'request.json', time.monotonic() + 15).get('closed', 0)
+    except Exception:
+        return None

@@ -19,8 +19,8 @@ def parser():
     style = common.add_mutually_exclusive_group()
     for flag in ("json", "plain", "tsv"):
         style.add_argument("--" + flag, action="store_true", default=argparse.SUPPRESS)
-    p = argparse.ArgumentParser(prog="amail", description="Fast email reads and verified, paced sending.", parents=[common])
-    p.add_argument("--version", action="version", version="amail 0.3.1")
+    p = argparse.ArgumentParser(prog="amail", description="Fast email reads and verified, paced sending.", parents=[common], allow_abbrev=False)
+    p.add_argument("--version", action="version", version="amail 0.4.0")
     sub = p.add_subparsers(dest="command", required=True)
     descriptions = {
         "accounts": "List enabled accounts; --available discovers accounts without enabling them",
@@ -48,8 +48,8 @@ def parser():
         "trash": "Move one message to Trash",
         "delete": "Alias for trash; does not permanently delete",
         "restore": "Restore a trashed message using recorded mailbox history",
-        "reply": "Create a reply draft; --send submits it immediately",
-        "forward": "Create a forward draft including attachments; --send submits it immediately",
+        "reply": "Draft a native Mail reply (Mail quotes the original); --send submits it immediately",
+        "forward": "Draft a native Mail forward (Mail includes the original and its attachments); --send submits it immediately",
         "draft": "Create, review and send local drafts (JSON input: amail schema message)",
         "batch": "Plan and run reviewed outreach (JSONL input: amail schema batch)",
         "policy": "Inspect pacing profiles or explicitly release a reviewed account hold",
@@ -59,6 +59,7 @@ def parser():
     def command(name, **kwargs):
         kwargs.setdefault("help", descriptions.get(name))
         kwargs.setdefault("description", descriptions.get(name))
+        kwargs.setdefault("allow_abbrev", False)
         result = sub.add_parser(name, parents=[common], formatter_class=argparse.ArgumentDefaultsHelpFormatter, **kwargs)
         if name in {"list", "search", "read", "thread"}:
             result.add_argument("--fields", help="Comma-separated message fields; list/search retain scope metadata")
@@ -102,7 +103,7 @@ def parser():
         q.add_argument("--cursor"); q.add_argument("--page", action="store_true")
     read = command("read"); read.add_argument("ref", nargs="+", help="One or more refs; multiple refs return a list"); read.add_argument("--body-only", action="store_true"); read.add_argument("--fetch", action="store_true")
     thread = command("thread"); thread.add_argument("ref"); thread.add_argument("--full", action="store_true", help="Include bodies in one call; missing cached bodies remain explicit"); thread.add_argument("--fetch", action="store_true", help="Fetch bodies from the server (implies --full)")
-    att = command("attachments"); att.add_argument("ref"); att.add_argument("--out"); att.add_argument("--fetch", action="store_true")
+    att = command("attachments", aliases=["attachment"]); att.add_argument("ref"); att.add_argument("--out"); att.add_argument("--fetch", action="store_true")
     command("index", help="Refresh the decoded body search snapshot")
     send = command("send")
     send.add_argument("--from", dest="sender", required=True)
@@ -120,6 +121,8 @@ def parser():
         status = command(name); status.add_argument("request_id", **({"nargs": "?"} if name == "status" else {}))
     for name in ("sent", "ledger"):
         q = command(name); q.add_argument("--account", default="*"); q.add_argument("--hours", type=float, default=24)
+        q.add_argument("--after", help="ISO date/time lower bound for the request time"); q.add_argument("--before", help="ISO date/time upper bound for the request time")
+        q.add_argument("--limit", type=int, default=0, help="Newest N entries; 0 means all in range")
     for name in ("mark", "flag", "move", "archive", "trash", "delete", "restore"):
         q = command(name); q.add_argument("ref")
         if name == "mark": q.add_argument("state", choices=["read", "unread"])
@@ -172,10 +175,14 @@ def conversation_draft(args, store, state, here):
     from mail_operations import load_message
     source, parts = load_message(store,args.ref,state,here)
     account = store.accounts[source["account_uuid"]]
-    sender = args.sender or (account.get("auth_address") or account["addresses"][0])
-    own = set(store.resolve(sender)[0]["addresses"])
     def addresses(value): return [a.casefold() for _, a in email.utils.getaddresses([value]) if a]
+    # Default to the alias the original was addressed to, so a reply comes from the address the other side used.
+    addressed = [a for a in addresses(source["to"] + "," + source["cc"]) if a in account["addresses"]]
+    sender = args.sender or (addressed[0] if addressed else account.get("auth_address") or account["addresses"][0])
+    own = set(store.resolve(sender)[0]["addresses"])
     intro = args.body if args.body is not None else Path(args.body_file).read_text() if args.body_file else ""
+    # Mail composes the quoted history, attribution line, forwarded content and
+    # attachments itself; amail only supplies the new text above them.
     if args.command == "reply":
         recipients = addresses(source["reply_to"] or source["from"])
         if set(recipients).issubset(own): recipients = addresses(source["to"])
@@ -186,20 +193,10 @@ def conversation_draft(args, store, state, here):
         recipients = list(dict.fromkeys(a for a in recipients if a not in own))
         cc = list(dict.fromkeys(a for a in cc if a not in recipients))
         subject = source["subject"] if source["subject"].casefold().startswith("re:") else "Re: " + source["subject"]
-        quote = "\n".join("> " + line for line in source["body"].splitlines())
-        body = intro + f'\n\nOn {source["date"]}, {source["from"]} wrote:\n' + quote
-        message = {"from": sender, "to": recipients, "cc": cc, "subject": subject, "body": body, "reply_to_ref": args.ref}
+        message = {"from": sender, "to": recipients, "cc": cc, "subject": subject, "body": intro, "reply_to_ref": args.ref}
     else:
-        attachments = []
-        if parts:
-            from mail_operations import fetch_attachments
-            directory = state / "forward-attachments" / str(time.time_ns())
-            if all(p["available"] for p in parts) and not args.ref.startswith("gmail:"): saved = store.extract(args.ref, directory)
-            else: saved = fetch_attachments(store, args.ref, directory, state, here)
-            attachments = [a["file"] for a in saved]
-        body = intro + "\n\n---------- Forwarded message ----------\n" + "\n".join(
-            f"{key}: {source[field]}" for key, field in [("From", "from"), ("To", "to"), ("Date", "date"), ("Subject", "subject")]) + "\n\n" + source["body"]
-        message = {"from": sender, "to": args.to, "subject": "Fwd: " + source["subject"], "body": body, "attachments": attachments}
+        subject = source["subject"] if source["subject"].casefold().startswith(("fwd:", "fw:")) else "Fwd: " + source["subject"]
+        message = {"from": sender, "to": args.to, "subject": subject, "body": intro, "forward_ref": args.ref}
     draft = draft_create(store, state, message, Path.cwd())
     if args.send:
         return send(store, arguments(draft["message"], request_id=draft["id"] + "-1"), state, here)
@@ -262,6 +259,7 @@ def run(args, store, state, here=HERE):
             args = argparse.Namespace(**{**vars(args), "ref": args.ref[0]})
         else:
             return [run(argparse.Namespace(**{**vars(args), "ref": ref}), store, state, here) for ref in args.ref]
+    if command == "attachment": command = "attachments"
     if command in {"read", "attachments"}:
         if args.fetch or args.ref.startswith("gmail:"):
             from mail_operations import load_message, fetch_attachments
@@ -286,8 +284,15 @@ def run(args, store, state, here=HERE):
         scan(store,state)
         if command in {"status", "send-status"}: return status(args.request_id, state, store)
         ids = [a["uuid"] for a in store.resolve(args.account)]
+        import datetime as dt
+        def stamp(value):
+            try: return dt.datetime.fromisoformat(value).timestamp()
+            except ValueError: raise MailError("Use an ISO date or date-time, for example 2026-09-18 or 2026-09-18T09:00")
+        lower = stamp(args.after) if args.after else time.time()-args.hours*3600
+        upper = stamp(args.before) if args.before else time.time()+1
         with ledger(state) as c:
-            rows = c.execute("select * from sends where created>=? and account in (" + ",".join("?" for _ in ids) + ") order by created desc", [time.time()-args.hours*3600] + ids).fetchall()
+            rows = c.execute("select * from sends where created>=? and created<? and account in (" + ",".join("?" for _ in ids) + ") order by created desc"
+                             + (" limit ?" if args.limit else ""), [lower, upper] + ids + ([args.limit] if args.limit else [])).fetchall()
         return [describe(r,state,store) for r in rows]
     if command in {"mark", "flag", "move", "archive", "trash", "delete", "restore"}:
         from mail_operations import mutate
@@ -371,25 +376,27 @@ def run(args, store, state, here=HERE):
             elif command == "sync":
                 result.append({"account": account["name"], **bridge(account["uuid"], "sync", here, state)})
             else:
-                info = {"account": account["name"], "local_cache": "readable", "aliases": account["addresses"]}
+                info = {"account": account["name"], "local_cache": "readable", "aliases": account["addresses"], "send_route": "mail_editor"}
                 try:
+                    info["automation"] = bridge(account["uuid"], "doctor", here, state)
+                    from native_editor import Accessibility
+                    access = Accessibility()
+                    try: info['editor_accessibility'] = bool(access.ax.AXIsProcessTrusted())
+                    finally: access.close()
+                    if not info['editor_accessibility']:
+                        info['send_requirement'] = 'Grant Accessibility access to the invoking terminal or agent host in System Settings'
+                    preferences=Path.home()/"Library/Group Containers/group.com.apple.mail/Library/Preferences/group.com.apple.mail.plist"
+                    settings=plistlib.loads(preferences.read_bytes()) if preferences.exists() else {}
+                    info["undo_send_delay_seconds"]=settings.get("UndoSendDelayTime",10)
+                    if info["undo_send_delay_seconds"]:
+                        info["send_delay_note"]="Mail holds outgoing messages for Undo Send; choose Off in Mail's Composing settings for immediate submission"
                     if account["kind"] == "com.apple.account.Google":
-                        profile = Gmail((account.get("auth_address") or account["addresses"][0]), state).profile()
-                        info.update(send_route="gmail_api", authenticated_as=profile["emailAddress"])
-                    else: info.update(send_route="apple_script", automation=bridge(account["uuid"], "doctor", here, state))
-                    if account["kind"] == "com.apple.account.Exchange":
-                        from native_editor import Accessibility
-                        access = Accessibility()
-                        try: info['editor_accessibility'] = bool(access.ax.AXIsProcessTrusted())
-                        finally: access.close()
-                        info['send_route'] = 'mail_editor'
-                        if not info['editor_accessibility']:
-                            info['send_requirement'] = 'Grant Accessibility access to the invoking terminal or agent host in System Settings'
-                        preferences=Path.home()/"Library/Group Containers/group.com.apple.mail/Library/Preferences/group.com.apple.mail.plist"
-                        settings=plistlib.loads(preferences.read_bytes()) if preferences.exists() else {}
-                        info["undo_send_delay_seconds"]=settings.get("UndoSendDelayTime",10)
-                        if info["undo_send_delay_seconds"]:
-                            info["send_delay_note"]="Mail holds outgoing messages for Undo Send; choose Off in Mail's Composing settings for immediate submission"
+                        # Only live Gmail reads (gmail: refs, --fetch, thread) use the API.
+                        try:
+                            profile = Gmail((account.get("auth_address") or account["addresses"][0]), state).profile()
+                            info.update(gmail_api_reads="available", authenticated_as=profile["emailAddress"])
+                        except MailError as e:
+                            info.update(gmail_api_reads="unavailable", gmail_api_note=str(e) + "; sending does not need it")
                 except MailError as e: info["connection_error"] = str(e)
                 result.append(info)
         return result
@@ -405,7 +412,7 @@ def project(value, fields):
         return [project(row, fields) for row in value]
     if not isinstance(value, dict): raise MailError("--fields requires structured output")
     unknown = set(keys) - set(value)
-    if unknown: raise MailError("Unknown output fields: " + ", ".join(sorted(unknown)))
+    if unknown: raise MailError("Unknown output fields: " + ", ".join(sorted(unknown)) + "; available: " + ", ".join(sorted(value)))
     return {key: value[key] for key in keys}
 
 

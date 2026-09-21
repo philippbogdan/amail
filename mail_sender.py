@@ -86,6 +86,30 @@ def ledger(state):
         c.close()
 
 
+def conversation_source(store, ref, state, here):
+    """The cached Mail record of an original message, for Mail's own reply and forward verbs."""
+    if ref.startswith("gmail:"):
+        from mail_operations import load_message
+        selected_state = state or Path(os.environ.get("MAIL_STATE_DIR", str(Path.home()/"Library/Application Support/amail")))
+        source, _ = load_message(store, ref, selected_state, here or Path(__file__).parent)
+    else:
+        source, _ = store.read(ref)
+    if "storage_mailbox" in source:
+        return source
+    original_id = source["message_id"].strip()
+    cached = []
+    for row in store.query(account=source["account_uuid"], mailbox="*", subject=source["subject"], limit=1000):
+        try:
+            item, _ = store.read(store.ref(row))
+            if item["message_id"] == original_id:
+                cached.append(item)
+        except (MailError, OSError):
+            continue
+    if len(cached) != 1:
+        raise MailError("Sync the original message into Mail before replying to or forwarding it")
+    return cached[0]
+
+
 def prepare(store,args,state=None,here=None):
     sender=address(args.sender)
     account=store.resolve(sender)[0]
@@ -94,37 +118,37 @@ def prepare(store,args,state=None,here=None):
     body=args.body if args.body is not None else (Path(args.body_file).read_text() if args.body_file else sys.stdin.read())
     if any(ord(ch)<32 or ord(ch)==127 for ch in args.subject+args.name):
         raise MailError("Subject and sender name must not contain control characters")
-    if not args.to or not 0 < args.timeout <= 120 or (args.cap is not None and args.cap < 1):
-        raise MailError("Require a recipient, a timeout from 0 to 120 seconds, and a positive cap")
+    if not body.strip() and not (getattr(args, "forward_ref", None) or getattr(args, "reply_to_ref", None)):
+        raise MailError("Body is empty; give the message some text")
+    if not args.to:
+        raise MailError("At least one recipient is required; replies and forwards also take explicit recipients")
+    if not 0 < args.timeout <= 120:
+        raise MailError("timeout must be between 0 and 120 seconds")
+    if args.cap is not None and args.cap < 1:
+        raise MailError("cap must be a positive number of recipients")
     request={"sender":sender,"formatted_sender":email.utils.formataddr((args.name,sender)),"subject":args.subject,"body":body,
              "to":[address(x) for x in args.to],"cc":[address(x) for x in args.cc],"bcc":[address(x) for x in args.bcc],"attach":[],
              "account_id":account["uuid"],"auth_account":account.get("auth_address") or sender}
-    if getattr(args, "reply_to_ref", None):
-        if args.reply_to_ref.startswith("gmail:"):
-            from mail_operations import load_message
-            selected_state = state or Path(os.environ.get("MAIL_STATE_DIR", str(Path.home()/"Library/Application Support/amail")))
-            source, _ = load_message(store,args.reply_to_ref,selected_state,here or Path(__file__).parent)
-        else:
-            source, _ = store.read(args.reply_to_ref)
+    for field, kind in (("reply_to_ref", "reply"), ("forward_ref", "forward")):
+        ref = getattr(args, field, None)
+        if not ref:
+            continue
+        source = conversation_source(store, ref, state, here)
         original_id = source["message_id"].strip()
-        if not re.fullmatch(r"<[^<>\r\n]+>", original_id):
-            raise MailError("Original Message-ID is unavailable or malformed; cannot preserve reply threading")
-        request["in_reply_to"] = original_id
-        request["references"] = " ".join((source["references"] + " " + original_id).split())
-        if account["kind"] != "com.apple.account.Google":
-            if "storage_mailbox" not in source:
-                cached = []
-                for row in store.query(account=source["account_uuid"],mailbox="*",subject=source["subject"],limit=1000):
-                    try:
-                        item,_=store.read(store.ref(row))
-                        if item["message_id"]==original_id: cached.append(item)
-                    except (MailError,OSError): continue
-                if len(cached)!=1:
-                    raise MailError("Sync the original message into Mail before replying from this account")
-                source=cached[0]
-            request["reply_source"] = {"account": source["account_uuid"], "id": source["id"],
-                                       "mailbox": source["storage_mailbox"],
-                                       "message_id": original_id, "subject": source["subject"]}
+        if kind == "reply":
+            if not re.fullmatch(r"<[^<>\r\n]+>", original_id):
+                raise MailError("Original Message-ID is unavailable or malformed; cannot preserve reply threading")
+            request["in_reply_to"] = original_id
+            request["references"] = " ".join((source["references"] + " " + original_id).split())
+        # Mail composes the reply or forward itself: quoted history, attribution
+        # line, forwarded attachments and thread headers are all native.
+        request[kind + "_source"] = {"account": source["account_uuid"], "id": source["id"],
+                                     "mailbox": source["storage_mailbox"], "message_id": original_id,
+                                     "subject": source["subject"], "kind": kind}
+        request["conversation"] = kind
+        prefixes = ("re:",) if kind == "reply" else ("fwd:", "fw:")
+        if not request["subject"].casefold().lstrip().startswith(prefixes):
+            request["subject"] = ("Re: " if kind == "reply" else "Fwd: ") + request["subject"].lstrip()
     attachments=[]
     for value in args.attach:
         path=Path(value).expanduser().resolve()
@@ -139,9 +163,10 @@ def prepare(store,args,state=None,here=None):
             except UnicodeDecodeError:
                 pass
         attachments.append(description)
-    verification={"account":account["uuid"],"sender":sender,"subject":args.subject,"body_hash":digest(normal_body(body)),"display_body_hash":digest(display_body(body)),
+    verification={"account":account["uuid"],"sender":sender,"subject":request["subject"],"body_hash":digest(normal_body(body)),"display_body_hash":digest(display_body(body)),
                   "to":sorted(request["to"]),"cc":sorted(request["cc"]),"bcc":sorted(request["bcc"]),"attachments":attachments}
-    verification.update(body_format_version=1, wire_body_hash=digest(wire_body(body)))
+    verification.update(body_format_version=2, wire_body_hash=digest(wire_body(body)), body=wire_body(body),
+                        conversation=request.get("conversation"))
     if request.get("in_reply_to"):
         verification["in_reply_to"] = request["in_reply_to"]
     fingerprint=digest(json.dumps([request,attachments],sort_keys=True))
@@ -156,28 +181,41 @@ def update(state,request_id,result):
         c.execute("update sends set state=?,result=? where request_id=?",(result["state"],json.dumps(result),request_id))
 
 
-def matches_content(store,item,parts,verification, *, draft=False):
+def body_matches(item, verification, *, draft=False):
+    """The saved or sent message must begin with the reviewed text as whole paragraphs.
+
+    Mail adds the native quoted history of a reply or forward, and any
+    configured signature, below the entered text. Nothing may appear above it.
+    """
     formatting = item.get("body_format", {})
     if formatting.get("apple_share_wrapper") or formatting.get("html_entire_body_quoted"):
         return False
-    if verification.get("body_format_version"):
-        # Mail saves an empty plain alternative in drafts; its HTML must match.
-        empty_draft_plain = draft and formatting.get('plain_body_hash') == digest('') and formatting.get('html_body_hash') == verification['wire_body_hash']
-        if formatting.get("plain_body_hash") != verification["wire_body_hash"] and not empty_draft_plain:
+    if formatting.get("plain_leading_blank_lines"):
+        return False
+    if "body" not in verification:
+        # Ledger entries from before 0.4.0 recorded hashes only.
+        empty_draft_plain = draft and formatting.get('plain_body_hash') == digest('') and formatting.get('html_body_hash') == verification.get('wire_body_hash')
+        if formatting.get("plain_body_hash") != verification.get("wire_body_hash") and not empty_draft_plain:
             return False
-        if formatting.get("html_body_hash") is not None and formatting["html_body_hash"] != verification["wire_body_hash"]:
-            return False
+        return formatting.get("html_body_hash") is None or formatting["html_body_hash"] == verification.get("wire_body_hash")
+    from local_store import body_texts, starts_with_paragraphs
+    texts = body_texts(parse_emlx(Path(item["file"]))) if item.get("file") else {"plain": item.get("body", ""), "html": None}
+    checked = [text for text in (texts["plain"], texts["html"]) if text is not None]
+    return bool(checked) and all(starts_with_paragraphs(text, verification["body"]) for text in checked)
+
+
+def matches_content(store,item,parts,verification, *, draft=False):
+    if not body_matches(item, verification, draft=draft):
+        return False
     to=sorted(canonical_address(store,a) for _,a in email.utils.getaddresses([item["to"]]) if a)
     cc=sorted(canonical_address(store,a) for _,a in email.utils.getaddresses([item["cc"]]) if a)
     expected_to=sorted(canonical_address(store,a) for a in verification["to"])
     expected_cc=sorted(canonical_address(store,a) for a in verification["cc"])
-    exact_body=digest(normal_body(item["body"]))==verification["body_hash"]
-    reflowed=digest(display_body(item["body"]))==verification.get("display_body_hash")
     if draft:
         actual_bcc = sorted(a.casefold() for _, a in email.utils.getaddresses([item.get('bcc', '')]) if a)
         if actual_bcc != sorted(verification['bcc']):
             return False
-    if to!=expected_to or cc!=expected_cc or not (draft and verification.get('body_format_version') or exact_body or (not verification.get("body_format_version") and reflowed)):
+    if to!=expected_to or cc!=expected_cc:
         return False
     if verification.get("in_reply_to") and item.get("in_reply_to") != verification["in_reply_to"]:
         return False
@@ -195,13 +233,25 @@ def matches_content(store,item,parts,verification, *, draft=False):
             text_hash=None
         match=next((p for p in unmatched if p["name"]==part["name"] and (p["sha256"]==actual_hash or (text_hash and p.get("text_hash")==text_hash))),None)
         if match is None:
+            if verification.get("conversation"):
+                continue  # Quoted inline images or the forwarded original's own attachments.
             return False
         unmatched.remove(match)
     return not unmatched
 
 
+def queued_in_outbox(store, verification):
+    """Mail keeps a message it could not submit in an Outbox; a filed Sent copy means submission succeeded."""
+    with store.connect() as c:
+        rows = c.execute("""select m.ROWID from messages m join mailboxes mb on mb.ROWID=m.mailbox join subjects s on s.ROWID=m.subject
+                            where m.deleted=0 and lower(mb.url) like '%/outbox' and s.subject=?""", (verification["subject"],)).fetchall()
+    return bool(rows)
+
+
 def observed_acceptance(store,verification):
-    candidates=store.query(account=verification["account"],mailbox="sent",subject=verification["subject"],limit=200,since_hours=1)
+    created = verification.get("created")
+    hours = max(1.0, (time.time() - created) / 3600 + .5) if created else 1.0
+    candidates=store.query(account=verification["account"],mailbox="sent",subject=verification["subject"],limit=200,since_hours=hours)
     matched=[]
     for row in candidates:
         if row["id"] in verification["before_ids"] or row["subject"]!=verification["subject"]:
@@ -223,7 +273,7 @@ def observed_acceptance(store,verification):
                 targets=store.resolve(recipient)
             except MailError:
                 continue
-            for received in store.query(account=targets[0]["uuid"],mailbox="inbox",subject=verification["subject"],limit=100,since_hours=1):
+            for received in store.query(account=targets[0]["uuid"],mailbox="inbox",subject=verification["subject"],limit=100,since_hours=hours):
                 try:
                     incoming,incoming_parts=store.read(store.ref(received))
                     incoming_file=store.path(received)
@@ -252,6 +302,12 @@ def observed_acceptance(store,verification):
     if proof:
         return {"sent_ref":item["ref"],"message_id":item["message_id"],"effective_from":item["from"],"evidence":proof,
                 "verification_source":"Mail's synced server metadata; not a fresh provider API response"}
+    if not queued_in_outbox(store, verification):
+        # Mail files its sent copy only after the account's server accepted the
+        # submission; a failed submission stays in an Outbox instead.
+        return {"sent_ref":item["ref"],"message_id":item["message_id"],"effective_from":item["from"],
+                "evidence":{"type":"sent_copy_filed_without_outbox_entry"},
+                "verification_source":"Mail filed the sent copy and holds nothing in an Outbox; server metadata not yet synced"}
     return None
 
 
@@ -266,8 +322,9 @@ def send(store,args,state,here):
     request["message_id"] = f"<amail.{request_id}@{request['sender'].split('@', 1)[1]}>"
     request["request_id"] = request_id
     verification["message_id"] = request["message_id"]
-    verification["before_ids"]=[r["id"] for r in store.query(account=account["uuid"],mailbox="sent",subject=args.subject,limit=100000)]
+    verification["before_ids"]=[r["id"] for r in store.query(account=account["uuid"],mailbox="sent",subject=request["subject"],limit=100000)]
     now=time.time()
+    verification["created"]=now
     purpose = getattr(args, "purpose", "personal")
     with ledger(state) as c:
         c.execute("begin immediate")
@@ -318,14 +375,6 @@ def send(store,args,state,here):
         if time.perf_counter()-started>=args.timeout:
             from gmail_backend import ProviderError
             raise ProviderError("Deadline elapsed before submission; no provider send was attempted")
-        if account["kind"] == "com.apple.account.Google":
-            from gmail_backend import submit
-            remaining = max(.1, args.timeout - (time.perf_counter() - started))
-            result.update(submit(request, remaining, state))
-            result["submission_ms"] = round((time.perf_counter() - started) * 1000, 1)
-            result["elapsed_ms"] = result["submission_ms"]
-            update(state, request_id, result)
-            return result
         from native_transport import submit as native_submit
         def prepared(checked):
             with ledger(state) as c, c:
@@ -374,6 +423,23 @@ def describe(row,state,store,result=None):
     return result
 
 
+def never_submitted(store, verification):
+    """Evidence that Mail was never asked to send: no draft was ever verified, or it still sits unsent in Drafts."""
+    draft_id = verification.get("draft_message_id")
+    if not draft_id:
+        return "The process exited before a draft was prepared; Mail was never asked to send"
+    if queued_in_outbox(store, verification) or time.time() - verification.get("created", time.time()) < 120:
+        return None  # give Mail's sync time to file a Sent copy before trusting a lingering draft
+    for row in store.query(account=verification["account"], mailbox="drafts", subject=verification["subject"], limit=200):
+        try:
+            item, _ = store.read(store.ref(row))
+        except (MailError, OSError):
+            continue
+        if item.get("message_id") == draft_id:
+            return "The prepared draft is still unsent in Mail's Drafts and no Sent copy exists"
+    return None
+
+
 def status(request_id,state,store):
     with ledger(state) as c:
         row=c.execute("select * from sends where request_id=?",(request_id,)).fetchone()
@@ -381,11 +447,24 @@ def status(request_id,state,store):
         raise MailError("Unknown send request ID")
     result=json.loads(row["result"])
     if result["state"] not in {"accepted","rejected","legacy_reported_sent"}:
-        evidence=observed_acceptance(store,json.loads(row["verification"]))
+        verification=json.loads(row["verification"])
+        verification.setdefault("created",row["created"])  # ledger rows from before 0.4.0
+        evidence=observed_acceptance(store,verification)
         if evidence:
             result.update(state="accepted",**evidence)
             update(state,request_id,result)
-        elif result["state"] == "submitting" and not owner_alive(row):
-            result.update(state="outcome_unknown", error="The submitting process exited; do not resend without reconciliation")
+        elif result["state"] == "submitting" and owner_alive(row):
+            pass
+        else:
+            reason = never_submitted(store, verification) if not result.get("mail_script", {}).get("mail_send_result") else None
+            if reason:
+                result.update(state="rejected", error=reason + "; nothing was sent, so this request may be retried")
+                if "still unsent" in reason:
+                    from native_transport import close_stale_window
+                    closed = close_stale_window(verification, state, Path(__file__).resolve().parent)
+                    if closed:
+                        result["closed_stale_windows"] = closed
+            elif result["state"] == "submitting":
+                result.update(state="outcome_unknown", error="The submitting process exited; do not resend without reconciliation")
             update(state,request_id,result)
     return describe(row,state,store,result)

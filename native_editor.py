@@ -20,6 +20,8 @@ class Accessibility:
             (self.cf, 'CFStringCreateWithCString', ptr, [ptr, ctypes.c_char_p, ctypes.c_uint32]),
             (self.cf, 'CFStringGetCString', ctypes.c_bool, [ptr, ptr, integer, ctypes.c_uint32]),
             (self.cf, 'CFStringGetLength', integer, [ptr]),
+            (self.cf, 'CFGetTypeID', ctypes.c_ulong, [ptr]),
+            (self.cf, 'CFStringGetTypeID', ctypes.c_ulong, []),
             (self.cf, 'CFArrayGetCount', integer, [ptr]),
             (self.cf, 'CFArrayGetValueAtIndex', ptr, [ptr, integer]),
             (self.cf, 'CFRelease', None, [ptr]),
@@ -55,8 +57,8 @@ class Accessibility:
         return self.own(self.cf.CFStringCreateWithCString(None, value.encode(), 0x08000100))
 
     def text(self, value):
-        if not value:
-            return ''
+        if not value or self.cf.CFGetTypeID(value) != self.cf.CFStringGetTypeID():
+            return ''  # AXValue of an image or attachment is a number, not text.
         buffer = ctypes.create_string_buffer(self.cf.CFStringGetLength(value) * 4 + 1)
         if not self.cf.CFStringGetCString(value, buffer, len(buffer), 0x08000100):
             raise MailError('Cannot decode a Mail accessibility attribute')
@@ -289,8 +291,31 @@ class SubmissionWatch:
             time.sleep(.05)
 
 
+def squash(value):
+    """Whitespace-insensitive comparison key for editor text."""
+    return ''.join(value.replace('\ufffc', '').split())
+
+
+ATTACHMENT_ROLES = {'AXAttachment', 'AXButton', 'AXImage'}  # Mail shows images inline.
+
+
+def attachment_names(ax, body):
+    """Labels of the attachment elements Mail exposes in the editor."""
+    names = []
+    for item in ax.walk(body):
+        if ax.text(ax.attr(item, 'AXRole')) in ATTACHMENT_ROLES:
+            names.append(' '.join(ax.text(ax.attr(item, name)) or '' for name in ('AXDescription', 'AXTitle', 'AXValue')))
+    return names
+
+
 def enter_body(title, text, attachments=()):
-    """Replace only the body of a uniquely identified compose window."""
+    """Insert the reviewed text at the top of a uniquely identified compose window.
+
+    Whatever Mail already placed in the editor stays below the new text: the
+    quoted history and attribution line of a native reply or forward, and any
+    configured signature. Attachments follow the new text.
+    """
+    text = text.rstrip('\n')
     ax = Accessibility()
     board = None
     try:
@@ -311,31 +336,27 @@ def enter_body(title, text, attachments=()):
         written = board.write([[('public.utf8-plain-text', text.encode())]])
         try:
             ax.assert_focus(app, window, body)
-            previous = ''.join(ax.body_text(body).replace('\ufffc', '').split())
-            ax.key(0, command=True)  # Command-A, restricted to the Mail process.
-            deadline = time.monotonic() + 3
-            while ''.join((ax.selected_text(body) or '').replace('\ufffc', '').split()) != previous:
-                ax.assert_focus(app, window, body)
-                if time.monotonic() >= deadline:
-                    raise MailError('Mail did not select the complete body; no text was pasted')
-                time.sleep(.05)
+            previous = squash(ax.body_text(body))
+            existing_attachments = len(attachment_names(ax, body))
+            ax.key(126, command=True)  # Command-Up: the start of the document, above any quoted history.
+            time.sleep(.05)
             ax.assert_focus(app, window, body)
             if board.count() != written:
                 raise MailError('Clipboard changed before body entry; nothing was pasted')
-            ax.key(9, command=True) if text else ax.key(51)
+            if text:
+                ax.key(9, command=True)  # Command-V, restricted to the Mail process.
+            expected = squash(text) + previous
             deadline = time.monotonic() + 3
-            expected = ''.join(text.split())
             while True:
                 ax.assert_focus(app, window, body)
-                if ''.join(ax.body_text(body).split()) == expected:
+                if squash(ax.body_text(body)) == expected:
                     break
                 if time.monotonic() >= deadline:
-                    raise MailError('Mail did not confirm body entry; the message was not sent')
+                    raise MailError('Mail did not place the text at the top of the body; the message was not sent')
                 time.sleep(.05)
             if attachments:
                 ax.assert_focus(app, window, body)
-                ax.key(125, command=True)  # End of the editable document.
-                ax.key(36)  # Put attachments after the final body paragraph.
+                ax.key(36)  # Return: a new paragraph after the entered text, before any history.
                 time.sleep(.1)
                 if board.count() != written:
                     raise MailError('Clipboard changed before attachment entry; nothing was sent')
@@ -344,16 +365,17 @@ def enter_body(title, text, attachments=()):
                 if board.count() != written:
                     raise MailError('Clipboard changed before attachment paste; nothing was sent')
                 ax.key(9, command=True)
+                # Wait for Mail to show the files; the saved draft's MIME parts are
+                # the actual gate, so an unlabelled inline image is not a failure here.
                 deadline = time.monotonic() + 5
-                while True:
+                while time.monotonic() < deadline:
                     ax.assert_focus(app, window, body)
-                    descriptions = [ax.text(ax.attr(item, 'AXDescription')) for item in ax.walk(body)
-                                    if ax.text(ax.attr(item, 'AXRole')) in {'AXAttachment', 'AXButton'}]
-                    if len(descriptions) == len(attachments) and all(any(Path(path).name in desc for desc in descriptions) for path in attachments):
+                    descriptions = attachment_names(ax, body)
+                    if (len(descriptions) >= existing_attachments + len(attachments)
+                            and all(any(Path(path).name in desc for desc in descriptions) for path in attachments)):
                         break
-                    if time.monotonic() >= deadline:
-                        raise MailError('Mail did not confirm every attachment; nothing was sent')
                     time.sleep(.1)
+                ax.assert_focus(app, window, body)
         finally:
             # Do not overwrite a clipboard change made by the user meanwhile.
             if board.count() == written:

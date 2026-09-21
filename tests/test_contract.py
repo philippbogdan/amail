@@ -13,6 +13,14 @@ import test_mail as fixtures
 from cli import parser, run
 from feedback import classify
 from gmail_backend import ProviderError
+ACCEPTED={'sent_ref':'fixture:sent','message_id':'<sent@example.com>','effective_from':'Owner <owner@example.com>','evidence':{'type':'fixture'}}
+SUBMITTED={'mail_send_result':True}
+def after_prepare(failure):
+    # Model native_transport: the verified draft is persisted before Mail is asked to send.
+    def submit(store, request, verification, state, here, timeout, prepared=None, prepare_only=False):
+        if prepared: prepared(dict(verification, draft_message_id='<prepared@example.com>'))
+        raise failure
+    return submit
 from local_store import MailError
 from mail_sender import ledger, send
 from workflows import batch_plan, batch_run
@@ -33,9 +41,9 @@ class ContractTests(unittest.TestCase):
                     'subject': 'Reply', 'body': 'Reviewed body'}, self.base)
                 first_args = parser().parse_args(['draft', 'send', draft['id']])
                 retry_args = parser().parse_args(['draft', 'send', draft['id'], '--retry-rejected'])
-                with patch('gmail_backend.submit', side_effect=ProviderError('failed', uncertain=uncertain)):
+                with patch('native_transport.submit', side_effect=after_prepare(ProviderError('failed', uncertain=uncertain))):
                     first = run(first_args, self.store, state, self.base)
-                with patch('gmail_backend.submit', return_value={'state':'accepted','provider':'gmail'}) as backend:
+                with patch('native_transport.submit', return_value=SUBMITTED) as backend, patch('mail_sender.observed_acceptance', return_value=None if uncertain else ACCEPTED):
                     retry = run(retry_args, self.store, state, self.base)
                 self.assertEqual(first['request_id'], retry['request_id'])
                 self.assertEqual(backend.call_count, 0 if uncertain else 1)
@@ -66,7 +74,7 @@ class ContractTests(unittest.TestCase):
                 result=send(self.store,self.args(dry_run=False,purpose='outreach',cap=None,request_id='parallel-'+str(i)),state,self.base)
                 return result['state']
             except MailError:return 'held'
-        with patch('gmail_backend.submit',return_value={'state':'accepted','provider':'gmail'}) as backend:
+        with patch('native_transport.submit',return_value=SUBMITTED) as backend, patch('mail_sender.observed_acceptance',return_value=ACCEPTED):
             with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:results=list(pool.map(one,range(16)))
         self.assertEqual(results.count('accepted'),1)
         self.assertEqual(backend.call_count,1)
@@ -75,7 +83,7 @@ class ContractTests(unittest.TestCase):
     def test_batch_resume_never_retries_an_ambiguous_provider_send(self):
         file=self.base/'batch.jsonl';file.write_text(json.dumps({'id':'one','from':'owner@example.com','to':['recipient@example.net'],'subject':'Hi','body':'Body'}))
         state=self.base/'state';plan=batch_plan(self.store,state,file)
-        with patch('gmail_backend.submit',side_effect=ProviderError('connection lost',uncertain=True)) as backend:
+        with patch('native_transport.submit',side_effect=ProviderError('connection lost',uncertain=True)) as backend:
             first=batch_run(self.store,state,self.base,plan['id'])
             second=batch_run(self.store,state,self.base,plan['id'],resume=True)
         self.assertEqual(first['state'],'paused');self.assertEqual(second['state'],'paused')
@@ -138,14 +146,24 @@ from mail_sender import send
 from unittest.mock import patch
 s=Store(Path(sys.argv[2])/'V10',Path(sys.argv[2])/'Accounts.sqlite',enabled=['owner@example.com'])
 a=argparse.Namespace(**json.loads(Path(sys.argv[3]).read_text()))
-with patch('gmail_backend.submit',side_effect=lambda *a,**k:os._exit(73)):
+def die(store,request,verification,state,here,timeout,prepared=None,prepare_only=False):
+ prepared(dict(verification,draft_message_id='<prepared@example.com>')); os._exit(73)
+with patch('native_transport.submit',side_effect=die):
  send(s,a,Path(sys.argv[2])/'state',Path(sys.argv[1]))
 '''
+        from mail_sender import status
+        # A process that died before any draft was prepared never asked Mail to send: safe to retry.
+        early=self.args(dry_run=False,timeout=5,request_id='crash-early')
+        early_file=self.base/'early.json';early_file.write_text(json.dumps(vars(early)))
+        p=subprocess.run([sys.executable,'-c',script.replace("prepared(dict(verification,draft_message_id='<prepared@example.com>')); ",""),str(repo),str(self.base),str(early_file)],capture_output=True,timeout=10)
+        self.assertEqual(p.returncode,73,p.stderr.decode())
+        resolved=status('crash-early',self.base/'state',self.store)
+        self.assertEqual(resolved['state'],'rejected');self.assertIn('never asked',resolved['error'])
+        # A process that died after the draft was prepared may have sent: stays unknown and blocks resends.
         p=subprocess.run([sys.executable,'-c',script,str(repo),str(self.base),str(args_file)],capture_output=True,timeout=10)
         self.assertEqual(p.returncode,73,p.stderr.decode())
-        from mail_sender import status
         self.assertEqual(status('crash-test',self.base/'state',self.store)['state'],'outcome_unknown')
-        with patch('gmail_backend.submit',side_effect=AssertionError('duplicate send')):
+        with patch('native_transport.submit',side_effect=AssertionError('duplicate send')):
             self.assertEqual(send(self.store,args,self.base/'state',repo)['state'],'outcome_unknown')
 
     def test_gmail_server_ref_is_account_scoped(self):
@@ -163,7 +181,7 @@ with patch('gmail_backend.submit',side_effect=lambda *a,**k:os._exit(73)):
     def test_history_exposes_requested_sender_and_correlated_feedback(self):
         from mail_sender import status
         state=self.base/'state'
-        with patch('gmail_backend.submit',return_value={'state':'accepted','provider':'gmail','effective_from':'Owner <owner@example.com>'}):
+        with patch('native_transport.submit',return_value=SUBMITTED), patch('mail_sender.observed_acceptance',return_value=ACCEPTED):
             send(self.store,self.args(dry_run=False,request_id='history-check'),state,self.base)
         with ledger(state) as c,c:
             c.execute('create table feedback(request_id text,type text,recipient text,created real)')
@@ -176,7 +194,7 @@ with patch('gmail_backend.submit',side_effect=lambda *a,**k:os._exit(73)):
 
     def test_unchanged_logical_item_is_not_resent_in_a_new_plan(self):
         state=self.base/'state'
-        with patch('gmail_backend.submit',return_value={'state':'accepted','provider':'gmail'}) as backend:
+        with patch('native_transport.submit',return_value=SUBMITTED) as backend, patch('mail_sender.observed_acceptance',return_value=ACCEPTED):
             first=send(self.store,self.args(dry_run=False,request_id='plan-one',logical_item='recipient-1',purpose='outreach'),state,self.base)
             second=send(self.store,self.args(dry_run=False,request_id='plan-two',logical_item='recipient-1',purpose='outreach'),state,self.base)
         self.assertEqual(first['state'],'accepted');self.assertEqual(second['deduplicated_from'],'plan-one')

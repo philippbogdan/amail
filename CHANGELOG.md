@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.0
+
+- Compose replies and forwards with Mail's own `reply` and `forward` verbs and insert the reviewed text above the history Mail built, instead of replacing the whole body. Quoted history, attribution lines, forwarded attachments and thread headers are now Mail's own; amail no longer writes quote markers or forward headers.
+- Send every account through Mail's compose window. The Gmail API send route and its expiring OAuth dependency are removed; `gog` remains optional for live Gmail reads only, and `doctor` reports it separately from sending.
+- Verify drafts and sent copies by whole-paragraph prefix: the message must begin with the reviewed text, with no leading blank line or share wrapper. Extra MIME parts are accepted only for replies and forwards.
+- Accept a send once Mail has filed its Sent copy with nothing queued in an Outbox, and reconcile from the request time rather than a one-hour window, so slow Exchange metadata no longer leaves sends unverified and the account blocked.
+- Close amail's compose window without saving when preparation fails, so a retry never finds a stray window with the same subject.
+- Default a reply's sender to the alias the original was addressed to. Add `forward_ref` to the message schema. Accept `draft show` output unchanged in `draft update`.
+- Reject abbreviated flags (`--since` no longer silently means `--since-hours`), add `--after`, `--before` and `--limit` to `sent`, accept `attachment` as an alias of `attachments`, and list the available names in unknown `--fields` errors.
+- Send images: Mail shows a pasted image inline, so the editor check accepts images and the saved draft's MIME parts are the gate. Reading an image element's accessibility value no longer aborts the process.
+- A draft with `reply_to_ref` or `forward_ref` gets the `Re:` or `Fwd:` prefix Mail would add; `draft update` accepts the whole `draft show` output; new messages need some body text; recipient, timeout and cap problems each get their own message; Mail's error text accompanies compose failures.
+- Resolve dead sends honestly: a request whose process died before a draft was prepared, or whose prepared draft still sits unsent in Drafts two minutes later, becomes `rejected` on the next `status` check (and its stale compose window is closed) instead of blocking the account forever. A death after submission started stays `outcome_unknown`.
+
 ## 0.3.1
 
 - Read native editor text from one document range so rich replies containing tables and repeated accessibility labels pass complete-selection verification.

@@ -103,7 +103,9 @@ class BodyLayout(HTMLParser):
         hidden = tag in {"head", "script", "style", "template"} or "hidden" in attrs or any(
             rule in {"display:none", "visibility:hidden", "visibility:collapse", "mso-hide:all"}
             for rule in style.split(";"))
-        if "Apple-Mail-URLShareWrapperClass" in attrs.get("class", "").split():
+        if ("Apple-Mail-URLShareWrapperClass" in attrs.get("class", "").split()
+                and not any(entry[0] == "blockquote" for entry in self.stack)):
+            # A native reply may retain this marker inside quoted history.
             self.apple_share_wrapper = True
         visible = not self.hidden() and not hidden
         if visible:
@@ -183,10 +185,40 @@ def body_format(msg):
     return {
         "plain_body_hash": hashlib.sha256(wire_body(text).encode()).hexdigest() if text is not None else None,
         "html_body_hash": hashlib.sha256(wire_body(parser.text.rstrip(" \n")).encode()).hexdigest() if has_html else None,
-        "plain_leading_blank_lines": len(text.replace("\r\n", "\n")) - len(text.replace("\r\n", "\n").lstrip("\n")) if text is not None else None,
+        "plain_leading_blank_lines": (len(text.replace("\r\n", "\n")) - len(text.replace("\r\n", "\n").lstrip("\n"))) if text is not None and text.strip() else (0 if text is not None else None),
         "apple_share_wrapper": parser.apple_share_wrapper,
         "html_entire_body_quoted": parser.quoted_characters > 0 and parser.unquoted_characters == 0,
     }
+
+
+def body_texts(msg):
+    """Rendered plain and HTML alternatives for content verification.
+
+    Mail saves drafts with an empty plain alternative, so an empty plain part
+    is treated as absent whenever an HTML alternative exists.
+    """
+    plain = msg.get_body(preferencelist=("plain",))
+    text = decoded(plain) if plain is not None else None
+    layout = BodyLayout()
+    has_html = False
+    for _, part in mime_parts(msg):
+        if part.get_content_type() == "text/html" and part.get_content_disposition() != "attachment" and not part.get_filename():
+            has_html = True
+            layout.feed(decoded(part))
+    if text is not None and not text.strip() and has_html:
+        text = None
+    return {"plain": wire_body(text) if text is not None else None,
+            "html": wire_body(layout.text.rstrip(" \n")) if has_html else None}
+
+
+def starts_with_paragraphs(actual, requested):
+    """True when the message text begins with the requested text as whole paragraphs."""
+    actual, requested = wire_body(actual), wire_body(requested)
+    if not requested:
+        return True
+    if actual == requested:
+        return True
+    return actual.startswith(requested) and actual[len(requested):].startswith("\n")
 
 
 def format_warnings(details):

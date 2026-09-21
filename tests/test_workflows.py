@@ -8,9 +8,6 @@ from local_store import MailError, message_text
 from mail_sender import ledger
 from policy import PROFILES, WaitRequired, eligibility, reserve
 from workflows import batch_plan, batch_run, batch_show, batch_control, draft_create, draft_get, arguments
-from gmail_backend import build_mime
-import email
-import email.policy
 import hashlib
 
 
@@ -108,14 +105,34 @@ class WorkflowTests(unittest.TestCase):
         result=batch_run(self.store,state,self.base,plan['id'],sender=sender)
         self.assertEqual(calls,[['person1@example.net']]);self.assertEqual(result['counts'],{'accepted':1,'suppressed':1})
 
-    def test_mime_preserves_binary_and_unicode(self):
-        attachment=self.base/'raw.bin';data=b'\x00\xff\r\n\x01';attachment.write_bytes(data)
-        request={'formatted_sender':'Owner <owner@example.com>','sender':'owner@example.com','to':['person@example.net'],'cc':[],'bcc':[],
-                 'subject':'café λ','body':'café λ\nLine two.','attach':[str(attachment)],'request_id':'exact-test'}
-        message=email.message_from_bytes(build_mime(request),policy=email.policy.default)
-        self.assertEqual(message_text(message),'café λ\nLine two.')
-        self.assertEqual(list(message.iter_attachments())[0].get_payload(decode=True),data)
-        self.assertEqual(str(message['X-Amail-Request-ID']),'exact-test')
+    def test_draft_show_output_round_trips_into_update(self):
+        state=self.base/'state'
+        draft=draft_create(self.store,state,{'from':'owner@example.com','to':['person@example.net'],'subject':'Hi','body':'Body'},self.base)
+        envelope=draft_get(state,draft['id'])
+        self.assertIn('account_uuid',envelope['message'])
+        updated=draft_create(self.store,state,envelope,self.base,draft['id'])  # the whole draft show output, unchanged
+        self.assertEqual(updated['revision'],2);self.assertEqual(updated['message']['body'],'Body')
+        edited=draft_create(self.store,state,dict(envelope['message'],body='Edited'),self.base,draft['id'])
+        self.assertEqual(edited['revision'],3);self.assertEqual(edited['message']['body'],'Edited')
 
+    def test_reply_and_forward_drafts_get_their_subject_prefix(self):
+        state=self.base/'state';ref=self.store.ref(self.row())
+        reply=draft_create(self.store,state,{'from':'owner@example.com','to':['person@example.net'],'subject':'100% literal _ invoice','body':'b','reply_to_ref':ref},self.base)
+        args=arguments(reply['message'],request_id='r',dry_run=True)
+        from mail_sender import prepare
+        _,request,verification,_=prepare(self.store,args)
+        self.assertEqual(request['subject'],'Re: 100% literal _ invoice');self.assertEqual(verification['subject'],request['subject'])
+        args.subject='RE: already';self.assertEqual(prepare(self.store,args)[1]['subject'],'RE: already')
+        forward=arguments(dict(reply['message'],forward_ref=ref,reply_to_ref=None,subject='x'),request_id='f',dry_run=True)
+        self.assertEqual(prepare(self.store,forward)[1]['subject'],'Fwd: x')
+
+    def test_forward_ref_is_a_native_forward_without_copied_attachments(self):
+        state=self.base/'state';ref=self.store.ref(self.row())
+        draft=draft_create(self.store,state,{'from':'owner@example.com','to':['person@example.net'],'subject':'Fwd: x','body':'For context.','forward_ref':ref},self.base)
+        self.assertEqual(draft['message']['forward_ref'],ref);self.assertEqual(draft['message']['attachments'],[])
+        args=arguments(draft['message'],request_id='fwd-1',dry_run=True)
+        self.assertEqual(args.forward_ref,ref)
+        with self.assertRaises(MailError):
+            draft_create(self.store,state,{'from':'owner@example.com','to':['person@example.net'],'subject':'x','body':'b','forward_ref':ref,'reply_to_ref':ref},self.base)
 
 if __name__=='__main__':unittest.main()

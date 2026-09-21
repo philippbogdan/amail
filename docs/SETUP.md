@@ -5,8 +5,8 @@
 - A Mac with Python 3.10 or newer, including SQLite FTS5 support. The current native editor route was tested on macOS 27.0 and Apple Silicon. The original cache implementation was also tested on macOS 26.5. Other Mail database and editor versions may need validation.
 - Google or Exchange accounts signed into **Apple Mail**, with mail downloaded locally. Add accounts in Mail's account settings first. amail does not create system Internet Accounts or recover their passwords.
 - Full Disk Access for the actual invoking host, such as Terminal or your agent's desktop app. Grant it under System Settings > Privacy & Security > Full Disk Access, then restart that host if necessary.
-- Automation permission for the host to control Mail, when macOS asks during `amail doctor` or a supported Mail operation. Native sending also needs Accessibility access for the invoking terminal or agent host under System Settings > Privacy & Security > Accessibility. System Events and browser automation are not required.
-- Gmail API operations additionally need `gog`, your own Google OAuth client, and account consent. Exchange uses Mail's existing authorised connection.
+- Automation permission for the host to control Mail, when macOS asks during `amail doctor` or a supported Mail operation. Sending also needs Accessibility access for the invoking terminal or agent host under System Settings > Privacy & Security > Accessibility. System Events and browser automation are not required.
+- Every account sends through Mail's existing authorised connection. Optional live Gmail reads (`gmail:` refs, `--fetch`, `thread`) additionally need `gog`, your own Google OAuth client, and account consent; an expired Google token never blocks sending.
 
 Gather these permissions and any required Google sign-ins before a long agent task. If organisational policy blocks an account or permission, respect the restriction and report the actual error. A working Apple Mail connection does not mean another Microsoft app will be permitted.
 
@@ -45,7 +45,9 @@ amail config
 
 This creates a private `config.json` under `~/Library/Application Support/amail`. Do not put account configuration or OAuth files in the repository.
 
-## Gmail OAuth
+## Gmail OAuth (optional, live reads only)
+
+Skip this section unless you want `gmail:` refs, `--fetch` or `thread` served live by the Gmail API. Sending, replying and forwarding from Gmail accounts go through Apple Mail like every other account.
 
 Install [gog](https://github.com/openclaw/gogcli) using its [official quickstart](https://gogcli.sh/quickstart.html). The command contract was tested with gog 0.10.0. Later versions should be checked with `gog auth credentials set --help` and `gog auth tokens export --help`.
 
@@ -74,13 +76,13 @@ gog auth credentials set /path/to/google-oauth-client.json --client amail
 
 gog stores `credentials-amail.json` in its user config directory and refresh tokens in its configured credential store. See [gog's named-client documentation](https://gogcli.sh/auth-clients.html). amail supports the default macOS directory and an explicit `GOG_HOME` used consistently for gog and amail. The Gmail backend temporarily exports only the requested account's token when it needs an access token, verifies the API identity, and removes the temporary export. It does not print credentials or put tokens on command lines.
 
-If authorisation expires, run `amail connect ADDRESS` again. It requests Gmail services explicitly. Never delete the shared send ledger as an authentication fix: doing so discards duplicate protection and usage history.
+If authorisation expires (testing-mode OAuth clients expire refresh tokens after seven days), `amail doctor` reports `gmail_api_reads: unavailable` and sending continues unaffected; run `amail connect ADDRESS` again when you need live reads. It requests Gmail services explicitly. Never delete the shared send ledger as an authentication fix: doing so discards duplicate protection and usage history.
 
-## Exchange and Microsoft 365
+## Sending through Mail (Gmail, Exchange and Microsoft 365)
 
 Connect the account in Apple Mail and allow it to sync. Then select it with `amail setup --accounts ...` and run `amail doctor`.
 
-amail creates an identified compose window through Mail scripting, enters the body and attachments through its editor using Accessibility, then verifies the saved MIME draft before allowing Mail to submit it. This avoids a Mail scripting defect that turns the entire body into quoted content. Composition is serialised across accounts, the clipboard is preserved, and a focus change or failed draft check stops the send. Allow the compose window to finish before interacting with Mail. The window remains visible through validation and closes after submission. If the reviewed request deliberately has no attachments, amail can confirm Mail's missing-attachment warning. Other unresolved validation prompts stop progress without an automatic retry. Provider acceptance is still corroborated with synchronised server metadata. No separate Microsoft Graph registration is needed, and credentials remain in Apple's account system.
+amail asks Mail to open its own compose window: a new message, or Mail's native `reply` or `forward` of the original, which already contains the attribution line, quoted history, forwarded content and attachments. It then inserts the reviewed text at the top of that window through the editor using Accessibility, adds any requested attachments after it, and verifies the saved MIME draft (the text at the top as whole paragraphs, recipients, thread headers, attachments, no leading blank line, no share wrapper) before allowing Mail to submit. amail never writes quote markers or attribution text itself. This avoids a Mail scripting defect that wraps any scripted body in a quotation with a blank first line. Composition is serialised across accounts, the clipboard is preserved, and a focus change or failed draft check stops the send and closes the window without saving. Allow the compose window to finish before interacting with Mail. The window remains visible through validation and closes after submission. If the reviewed request deliberately has no attachments, amail can confirm Mail's missing-attachment warning. Other unresolved validation prompts stop progress without an automatic retry. No separate Microsoft Graph registration or Google API access is needed, and credentials remain in Apple's account system.
 
 For immediate submission, manually choose **Mail > Settings > Composing > Undo send delay > Off**. This also changes manual Mail sends. With a delay enabled, amail waits for corroboration and may report an unverified outcome before the message leaves Mail. Check `amail status REQUEST_ID`; do not blindly resend.
 
@@ -129,8 +131,8 @@ Paths:
 | Executable | `~/.local/bin/amail` |
 | Versioned code and old executable backups | `~/.local/lib/amail/` |
 | Private config, ledger, drafts, assets and access-token cache | `~/Library/Application Support/amail/` |
-| Gmail OAuth client file | `~/Library/Application Support/gogcli/credentials-amail.json` |
-| Gmail refresh token | gog credential store, client `amail` |
+| Optional Gmail read OAuth client file | `~/Library/Application Support/gogcli/credentials-amail.json` |
+| Optional Gmail read refresh token | gog credential store, client `amail` |
 | Mail cache and Exchange credentials | Existing macOS Mail and account storage |
 
 `AMAIL_STATE_DIR` selects another state directory; the earlier `MAIL_STATE_DIR` name remains supported. `AMAIL_CONFIG` can select a separate config file. Use isolated state for fixture work, not to evade sending limits or resend an ambiguous request. `--prefix` changes where code is installed, not the user's state location.
