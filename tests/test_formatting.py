@@ -120,10 +120,34 @@ class FormattingTests(unittest.TestCase):
             operations.append(operation)
             return {'outgoing_id': 7, 'stage': 'composed'} if operation == 'compose' else {'stage': operation + 'ed'}
         with patch('native_transport.script', side_effect=fake_script), patch('native_editor.ensure_subject_available'), \
-             patch('native_editor.enter_body', side_effect=MailError('Mail did not place the text at the top of the body')):
+             patch('native_editor.enter_body', side_effect=MailError('Mail did not place the text at the top of the body')), \
+             patch('native_transport.sweep_synced_drafts', return_value=0) as sweep:
             with self.assertRaises(MailError):
                 prepare_native(self.store, {'subject': 'Test', 'body': 'Body', 'attach': [], 'account_id': 'GMAIL', 'sender': 'owner@example.com'}, {}, self.base, self.base, self.base / 'request.json', time.monotonic() + 5)
         self.assertEqual(operations, ['compose', 'discard'])
+        sweep.assert_called_once()
+
+    def test_sweep_deletes_only_server_synced_autosaved_drafts(self):
+        from native_transport import sweep_synced_drafts
+        import contextlib, sqlite3
+        self.write_message(123, body='Body')
+        with contextlib.closing(sqlite3.connect(self.db)) as c, c:
+            c.execute("insert into mailboxes values(7,'imap://GMAIL/Drafts',1,0)")
+            c.execute("update subjects set subject='Test'"); c.execute("update messages set remote_id=null where ROWID=123")
+            c.execute('insert into labels values(123,7)')
+        from local_store import Store
+        store = Store(self.root, self.base / 'Accounts.sqlite', enabled=['owner@example.com'])
+        request = {'subject': 'Test', 'account_id': 'GMAIL', 'sender': 'owner@example.com'}
+        calls = []
+        with patch('native_transport.script', side_effect=lambda req, op, *a: calls.append((op, req.get('sweep_ids'))) or {'stage': 'swept'}):
+            self.assertEqual(sweep_synced_drafts(store, request, set(), self.base, self.base / 'r.json', wait=1.5), 0)
+        self.assertEqual(calls, [])  # unsynced: never deleted
+        with contextlib.closing(sqlite3.connect(self.db)) as c, c:
+            c.execute("update messages set remote_id=555 where ROWID=123")
+        with patch('native_transport.script', side_effect=lambda req, op, *a: calls.append((op, req.get('sweep_ids'))) or {'stage': 'swept'}):
+            self.assertEqual(sweep_synced_drafts(store, request, set(), self.base, self.base / 'r.json', wait=5), 1)
+        self.assertEqual(calls, [('sweep', [123])])
+        self.assertEqual(sweep_synced_drafts(store, request, {123}, self.base, self.base / 'r.json', wait=1.5), 0)  # pre-existing drafts are untouched
 
     def test_empty_plain_draft_fallback_keeps_quote_semantics(self):
         item, _ = self.put('', '<blockquote>Body</blockquote>')
