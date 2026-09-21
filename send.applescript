@@ -14,6 +14,7 @@ on run argv
     set ccAddresses to (q's objectForKey:"cc") as list
     set bccAddresses to (q's objectForKey:"bcc") as list
     set theStage to "compose"
+    set composed to missing value
     try
         tell application "Mail"
             set sendingAccount to first account whose id is accountID
@@ -23,6 +24,7 @@ on run argv
                 if replySource is missing value then set replySource to q's objectForKey:"forward_source"
                 if replySource is missing value then
                     set outgoing to make new outgoing message with properties {sender:senderText, subject:marker, visible:true}
+                    set composed to outgoing
                 else
                     set sourceAccount to first account whose id is ((replySource's objectForKey:"account") as text)
                     set sourcePath to (replySource's objectForKey:"mailbox") as text
@@ -43,6 +45,7 @@ on run argv
                     else
                         set outgoing to reply originalMessage with opening window
                     end if
+                    set composed to outgoing
                     set sender of outgoing to senderText
                     set subject of outgoing to marker
                     delete every to recipient of outgoing
@@ -60,13 +63,23 @@ on run argv
                 delete outgoing
                 set knownDrafts to (q's objectForKey:"known_drafts") as list
                 set swept to 0
-                repeat 4 times
+                set quietPasses to 0
+                -- Mail files the autosaved copy a few seconds after the window closes.
+                repeat 20 times
+                    set found to 0
                     repeat with candidate in (messages of drafts mailbox whose subject is subjectText)
                         if (id of candidate) is not in knownDrafts and (id of account of mailbox of candidate) is accountID then
                             delete candidate
                             set swept to swept + 1
+                            set found to found + 1
                         end if
                     end repeat
+                    if found is 0 then
+                        set quietPasses to quietPasses + 1
+                    else
+                        set quietPasses to 0
+                    end if
+                    if swept > 0 and quietPasses ≥ 2 then exit repeat
                     delay 0.5
                 end repeat
                 return "{\"stage\":\"discarded\",\"swept_drafts\":" & swept & "}"
@@ -103,7 +116,13 @@ on run argv
             return "{\"mail_send_result\":false,\"engine\":\"mail_editor\"}"
         end tell
     on error errorText number errorNumber
-        return "{\"stage\":\"" & theStage & "\",\"error_number\":" & errorNumber & "}"
+        if composed is not missing value then
+            -- Never leave a half-composed window behind when composition itself failed.
+            try
+                tell application "Mail" to delete composed
+            end try
+        end if
+        return "{\"stage\":\"" & theStage & "\",\"error_number\":" & errorNumber & ",\"error_text\":\"" & my jsonText(errorText) & "\"}"
     end try
 end run
 
@@ -111,3 +130,12 @@ on normalID(value)
     set valueString to current application's NSString's stringWithString:value
     return (valueString's stringByTrimmingCharactersInSet:(current application's NSCharacterSet's characterSetWithCharactersInString:"<> ")) as text
 end normalID
+
+on jsonText(value)
+    set valueString to current application's NSString's stringWithString:(value as text)
+    set valueString to valueString's stringByReplacingOccurrencesOfString:"\\" withString:"\\\\"
+    set valueString to valueString's stringByReplacingOccurrencesOfString:"\"" withString:"\\\""
+    set valueString to valueString's stringByReplacingOccurrencesOfString:linefeed withString:" "
+    set valueString to valueString's stringByReplacingOccurrencesOfString:return withString:" "
+    return valueString as text
+end jsonText

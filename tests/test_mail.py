@@ -245,6 +245,10 @@ class Fixture(unittest.TestCase):
         v['created']=old-60
         self.assertIsNotNone(mail_sender.observed_acceptance(self.store,v))
 
+    def test_rejects_empty_new_message_body(self):
+        for body in ['', '   \n\n']:
+            with self.assertRaises(MailError):mail_sender.prepare(self.store,self.args(body=body))
+
     def test_rejects_header_injection(self):
         for args in [self.args(subject='Hello\nBcc: attacker@example.com'),self.args(to=['a@example.com\n'])]:
             with self.assertRaises(MailError):mail_sender.prepare(self.store,args)

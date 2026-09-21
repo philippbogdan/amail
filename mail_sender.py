@@ -118,6 +118,8 @@ def prepare(store,args,state=None,here=None):
     body=args.body if args.body is not None else (Path(args.body_file).read_text() if args.body_file else sys.stdin.read())
     if any(ord(ch)<32 or ord(ch)==127 for ch in args.subject+args.name):
         raise MailError("Subject and sender name must not contain control characters")
+    if not body.strip() and not (getattr(args, "forward_ref", None) or getattr(args, "reply_to_ref", None)):
+        raise MailError("Body is empty; give the message some text")
     if not args.to or not 0 < args.timeout <= 120 or (args.cap is not None and args.cap < 1):
         raise MailError("Require a recipient, a timeout from 0 to 120 seconds, and a positive cap")
     request={"sender":sender,"formatted_sender":email.utils.formataddr((args.name,sender)),"subject":args.subject,"body":body,

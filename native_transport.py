@@ -34,8 +34,9 @@ def script(request, operation, here, path, deadline):
         if watch:
             watch.close()
     if 'error_number' in reply:
-        raise ProviderError('Mail refused ' + reply.get('stage', operation) + ' (error ' + str(reply['error_number']) + ')',
-                            uncertain=reply.get('stage') == 'send')
+        detail = reply.get('error_text')
+        raise ProviderError('Mail refused ' + reply.get('stage', operation) + ' (error ' + str(reply['error_number']) + ')'
+                            + (': ' + detail if detail else ''), uncertain=reply.get('stage') == 'send')
     valid = (operation == 'compose' and type(reply.get('outgoing_id')) is int
              or operation == 'prepare' and reply.get('stage') == 'prepared'
              or operation == 'discard' and reply.get('stage') == 'discarded'
