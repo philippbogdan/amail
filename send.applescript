@@ -54,6 +54,7 @@ on run argv
                 end if
                 return "{\"outgoing_id\":" & (id of outgoing) & ",\"stage\":\"composed\"}"
             end if
+            set theStage to operation
             set outgoing to outgoing message id ((q's objectForKey:"outgoing_id") as integer)
             if operation is "discard" then
                 -- Close amail's own compose window without saving, then remove the

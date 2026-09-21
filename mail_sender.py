@@ -120,8 +120,12 @@ def prepare(store,args,state=None,here=None):
         raise MailError("Subject and sender name must not contain control characters")
     if not body.strip() and not (getattr(args, "forward_ref", None) or getattr(args, "reply_to_ref", None)):
         raise MailError("Body is empty; give the message some text")
-    if not args.to or not 0 < args.timeout <= 120 or (args.cap is not None and args.cap < 1):
-        raise MailError("Require a recipient, a timeout from 0 to 120 seconds, and a positive cap")
+    if not args.to:
+        raise MailError("At least one recipient is required; replies and forwards also take explicit recipients")
+    if not 0 < args.timeout <= 120:
+        raise MailError("timeout must be between 0 and 120 seconds")
+    if args.cap is not None and args.cap < 1:
+        raise MailError("cap must be a positive number of recipients")
     request={"sender":sender,"formatted_sender":email.utils.formataddr((args.name,sender)),"subject":args.subject,"body":body,
              "to":[address(x) for x in args.to],"cc":[address(x) for x in args.cc],"bcc":[address(x) for x in args.bcc],"attach":[],
              "account_id":account["uuid"],"auth_account":account.get("auth_address") or sender}
@@ -142,6 +146,9 @@ def prepare(store,args,state=None,here=None):
                                      "mailbox": source["storage_mailbox"], "message_id": original_id,
                                      "subject": source["subject"], "kind": kind}
         request["conversation"] = kind
+        prefixes = ("re:",) if kind == "reply" else ("fwd:", "fw:")
+        if not request["subject"].casefold().lstrip().startswith(prefixes):
+            request["subject"] = ("Re: " if kind == "reply" else "Fwd: ") + request["subject"].lstrip()
     attachments=[]
     for value in args.attach:
         path=Path(value).expanduser().resolve()
@@ -156,7 +163,7 @@ def prepare(store,args,state=None,here=None):
             except UnicodeDecodeError:
                 pass
         attachments.append(description)
-    verification={"account":account["uuid"],"sender":sender,"subject":args.subject,"body_hash":digest(normal_body(body)),"display_body_hash":digest(display_body(body)),
+    verification={"account":account["uuid"],"sender":sender,"subject":request["subject"],"body_hash":digest(normal_body(body)),"display_body_hash":digest(display_body(body)),
                   "to":sorted(request["to"]),"cc":sorted(request["cc"]),"bcc":sorted(request["bcc"]),"attachments":attachments}
     verification.update(body_format_version=2, wire_body_hash=digest(wire_body(body)), body=wire_body(body),
                         conversation=request.get("conversation"))
@@ -315,7 +322,7 @@ def send(store,args,state,here):
     request["message_id"] = f"<amail.{request_id}@{request['sender'].split('@', 1)[1]}>"
     request["request_id"] = request_id
     verification["message_id"] = request["message_id"]
-    verification["before_ids"]=[r["id"] for r in store.query(account=account["uuid"],mailbox="sent",subject=args.subject,limit=100000)]
+    verification["before_ids"]=[r["id"] for r in store.query(account=account["uuid"],mailbox="sent",subject=request["subject"],limit=100000)]
     now=time.time()
     verification["created"]=now
     purpose = getattr(args, "purpose", "personal")
@@ -416,6 +423,23 @@ def describe(row,state,store,result=None):
     return result
 
 
+def never_submitted(store, verification):
+    """Evidence that Mail was never asked to send: no draft was ever verified, or it still sits unsent in Drafts."""
+    draft_id = verification.get("draft_message_id")
+    if not draft_id:
+        return "The process exited before a draft was prepared; Mail was never asked to send"
+    if queued_in_outbox(store, verification) or time.time() - verification.get("created", time.time()) < 120:
+        return None  # give Mail's sync time to file a Sent copy before trusting a lingering draft
+    for row in store.query(account=verification["account"], mailbox="drafts", subject=verification["subject"], limit=200):
+        try:
+            item, _ = store.read(store.ref(row))
+        except (MailError, OSError):
+            continue
+        if item.get("message_id") == draft_id:
+            return "The prepared draft is still unsent in Mail's Drafts and no Sent copy exists"
+    return None
+
+
 def status(request_id,state,store):
     with ledger(state) as c:
         row=c.execute("select * from sends where request_id=?",(request_id,)).fetchone()
@@ -429,7 +453,13 @@ def status(request_id,state,store):
         if evidence:
             result.update(state="accepted",**evidence)
             update(state,request_id,result)
-        elif result["state"] == "submitting" and not owner_alive(row):
-            result.update(state="outcome_unknown", error="The submitting process exited; do not resend without reconciliation")
+        elif result["state"] == "submitting" and owner_alive(row):
+            pass
+        else:
+            reason = never_submitted(store, verification) if not result.get("mail_script", {}).get("mail_send_result") else None
+            if reason:
+                result.update(state="rejected", error=reason + "; nothing was sent, so this request may be retried")
+            elif result["state"] == "submitting":
+                result.update(state="outcome_unknown", error="The submitting process exited; do not resend without reconciliation")
             update(state,request_id,result)
     return describe(row,state,store,result)

@@ -47,7 +47,9 @@ def normalise(item, base, state, store, *, require_id=False):
     allowed = {"id", "from", "to", "cc", "bcc", "subject", "body", "body_file", "attachments", "reply_to_ref", "forward_ref", "name"}
     if not isinstance(item, dict):
         raise MailError("Message must be a JSON object; see amail schema message")
-    # draft show returns derived fields; accept its output back unchanged.
+    # draft show returns an envelope with derived fields; accept its output back unchanged.
+    if isinstance(item.get("message"), dict) and {"id", "revision", "message"} <= set(item):
+        item = item["message"]
     item = {key: value for key, value in item.items() if key not in {"account_uuid"}}
     if isinstance(item.get("attachments"), list) and all(isinstance(a, dict) and "path" in a for a in item["attachments"]):
         item["attachments"] = [a["path"] for a in item["attachments"]]

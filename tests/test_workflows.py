@@ -108,10 +108,23 @@ class WorkflowTests(unittest.TestCase):
     def test_draft_show_output_round_trips_into_update(self):
         state=self.base/'state'
         draft=draft_create(self.store,state,{'from':'owner@example.com','to':['person@example.net'],'subject':'Hi','body':'Body'},self.base)
-        shown=draft_get(state,draft['id'])['message']
-        self.assertIn('account_uuid',shown)
-        updated=draft_create(self.store,state,dict(shown,body='Edited'),self.base,draft['id'])
-        self.assertEqual(updated['revision'],2);self.assertEqual(updated['message']['body'],'Edited')
+        envelope=draft_get(state,draft['id'])
+        self.assertIn('account_uuid',envelope['message'])
+        updated=draft_create(self.store,state,envelope,self.base,draft['id'])  # the whole draft show output, unchanged
+        self.assertEqual(updated['revision'],2);self.assertEqual(updated['message']['body'],'Body')
+        edited=draft_create(self.store,state,dict(envelope['message'],body='Edited'),self.base,draft['id'])
+        self.assertEqual(edited['revision'],3);self.assertEqual(edited['message']['body'],'Edited')
+
+    def test_reply_and_forward_drafts_get_their_subject_prefix(self):
+        state=self.base/'state';ref=self.store.ref(self.row())
+        reply=draft_create(self.store,state,{'from':'owner@example.com','to':['person@example.net'],'subject':'100% literal _ invoice','body':'b','reply_to_ref':ref},self.base)
+        args=arguments(reply['message'],request_id='r',dry_run=True)
+        from mail_sender import prepare
+        _,request,verification,_=prepare(self.store,args)
+        self.assertEqual(request['subject'],'Re: 100% literal _ invoice');self.assertEqual(verification['subject'],request['subject'])
+        args.subject='RE: already';self.assertEqual(prepare(self.store,args)[1]['subject'],'RE: already')
+        forward=arguments(dict(reply['message'],forward_ref=ref,reply_to_ref=None,subject='x'),request_id='f',dry_run=True)
+        self.assertEqual(prepare(self.store,forward)[1]['subject'],'Fwd: x')
 
     def test_forward_ref_is_a_native_forward_without_copied_attachments(self):
         state=self.base/'state';ref=self.store.ref(self.row())

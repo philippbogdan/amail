@@ -15,6 +15,12 @@ from feedback import classify
 from gmail_backend import ProviderError
 ACCEPTED={'sent_ref':'fixture:sent','message_id':'<sent@example.com>','effective_from':'Owner <owner@example.com>','evidence':{'type':'fixture'}}
 SUBMITTED={'mail_send_result':True}
+def after_prepare(failure):
+    # Model native_transport: the verified draft is persisted before Mail is asked to send.
+    def submit(store, request, verification, state, here, timeout, prepared=None, prepare_only=False):
+        if prepared: prepared(dict(verification, draft_message_id='<prepared@example.com>'))
+        raise failure
+    return submit
 from local_store import MailError
 from mail_sender import ledger, send
 from workflows import batch_plan, batch_run
@@ -35,7 +41,7 @@ class ContractTests(unittest.TestCase):
                     'subject': 'Reply', 'body': 'Reviewed body'}, self.base)
                 first_args = parser().parse_args(['draft', 'send', draft['id']])
                 retry_args = parser().parse_args(['draft', 'send', draft['id'], '--retry-rejected'])
-                with patch('native_transport.submit', side_effect=ProviderError('failed', uncertain=uncertain)):
+                with patch('native_transport.submit', side_effect=after_prepare(ProviderError('failed', uncertain=uncertain))):
                     first = run(first_args, self.store, state, self.base)
                 with patch('native_transport.submit', return_value=SUBMITTED) as backend, patch('mail_sender.observed_acceptance', return_value=None if uncertain else ACCEPTED):
                     retry = run(retry_args, self.store, state, self.base)
@@ -140,12 +146,22 @@ from mail_sender import send
 from unittest.mock import patch
 s=Store(Path(sys.argv[2])/'V10',Path(sys.argv[2])/'Accounts.sqlite',enabled=['owner@example.com'])
 a=argparse.Namespace(**json.loads(Path(sys.argv[3]).read_text()))
-with patch('native_transport.submit',side_effect=lambda *a,**k:os._exit(73)):
+def die(store,request,verification,state,here,timeout,prepared=None,prepare_only=False):
+ prepared(dict(verification,draft_message_id='<prepared@example.com>')); os._exit(73)
+with patch('native_transport.submit',side_effect=die):
  send(s,a,Path(sys.argv[2])/'state',Path(sys.argv[1]))
 '''
+        from mail_sender import status
+        # A process that died before any draft was prepared never asked Mail to send: safe to retry.
+        early=self.args(dry_run=False,timeout=5,request_id='crash-early')
+        early_file=self.base/'early.json';early_file.write_text(json.dumps(vars(early)))
+        p=subprocess.run([sys.executable,'-c',script.replace("prepared(dict(verification,draft_message_id='<prepared@example.com>')); ",""),str(repo),str(self.base),str(early_file)],capture_output=True,timeout=10)
+        self.assertEqual(p.returncode,73,p.stderr.decode())
+        resolved=status('crash-early',self.base/'state',self.store)
+        self.assertEqual(resolved['state'],'rejected');self.assertIn('never asked',resolved['error'])
+        # A process that died after the draft was prepared may have sent: stays unknown and blocks resends.
         p=subprocess.run([sys.executable,'-c',script,str(repo),str(self.base),str(args_file)],capture_output=True,timeout=10)
         self.assertEqual(p.returncode,73,p.stderr.decode())
-        from mail_sender import status
         self.assertEqual(status('crash-test',self.base/'state',self.store)['state'],'outcome_unknown')
         with patch('native_transport.submit',side_effect=AssertionError('duplicate send')):
             self.assertEqual(send(self.store,args,self.base/'state',repo)['state'],'outcome_unknown')

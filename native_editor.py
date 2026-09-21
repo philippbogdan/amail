@@ -20,6 +20,8 @@ class Accessibility:
             (self.cf, 'CFStringCreateWithCString', ptr, [ptr, ctypes.c_char_p, ctypes.c_uint32]),
             (self.cf, 'CFStringGetCString', ctypes.c_bool, [ptr, ptr, integer, ctypes.c_uint32]),
             (self.cf, 'CFStringGetLength', integer, [ptr]),
+            (self.cf, 'CFGetTypeID', ctypes.c_ulong, [ptr]),
+            (self.cf, 'CFStringGetTypeID', ctypes.c_ulong, []),
             (self.cf, 'CFArrayGetCount', integer, [ptr]),
             (self.cf, 'CFArrayGetValueAtIndex', ptr, [ptr, integer]),
             (self.cf, 'CFRelease', None, [ptr]),
@@ -55,8 +57,8 @@ class Accessibility:
         return self.own(self.cf.CFStringCreateWithCString(None, value.encode(), 0x08000100))
 
     def text(self, value):
-        if not value:
-            return ''
+        if not value or self.cf.CFGetTypeID(value) != self.cf.CFStringGetTypeID():
+            return ''  # AXValue of an image or attachment is a number, not text.
         buffer = ctypes.create_string_buffer(self.cf.CFStringGetLength(value) * 4 + 1)
         if not self.cf.CFStringGetCString(value, buffer, len(buffer), 0x08000100):
             raise MailError('Cannot decode a Mail accessibility attribute')

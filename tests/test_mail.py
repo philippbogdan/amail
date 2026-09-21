@@ -177,7 +177,10 @@ class Fixture(unittest.TestCase):
 
     def test_timeout_does_not_resend_same_request(self):
         self.store.accounts["GMAIL"]["kind"]="com.apple.account.Exchange"
-        with patch.object(mail_sender,'process_start',return_value='fixture process'), patch('native_transport.submit',side_effect=subprocess.TimeoutExpired('osascript',.1)) as runner:
+        def slow(store,request,verification,state,here,timeout,prepared=None,prepare_only=False):
+            if prepared:prepared(dict(verification,draft_message_id='<prepared@example.com>'))
+            raise subprocess.TimeoutExpired('osascript',.1)
+        with patch.object(mail_sender,'process_start',return_value='fixture process'), patch('native_transport.submit',side_effect=slow) as runner:
             result=mail_sender.send(self.store,self.args(dry_run=False),self.base/'state',self.base)
             again=mail_sender.send(self.store,self.args(dry_run=False),self.base/'state',self.base)
         self.assertEqual(result['state'],'outcome_unknown')
@@ -244,6 +247,24 @@ class Fixture(unittest.TestCase):
         self.assertIsNone(mail_sender.observed_acceptance(self.store,v))
         v['created']=old-60
         self.assertIsNotNone(mail_sender.observed_acceptance(self.store,v))
+
+    def test_unsent_draft_lingering_in_drafts_resolves_to_rejected_after_grace(self):
+        self.store.accounts['GMAIL']['kind']='com.apple.account.Exchange'
+        def die(store,request,verification,state,here,timeout,prepared=None,prepare_only=False):
+            prepared(dict(verification,draft_message_id='<fixture-123@example.com>'));raise subprocess.TimeoutExpired('osascript',.1)
+        with patch.object(mail_sender,'process_start',return_value='fixture process'), patch('native_transport.submit',side_effect=die):
+            result=mail_sender.send(self.store,self.args(dry_run=False,request_id='lingering'),self.base/'state',self.base)
+        self.assertEqual(result['state'],'outcome_unknown')
+        with contextlib.closing(sqlite3.connect(self.db)) as c,c:
+            c.execute("insert into mailboxes values(7,'imap://GMAIL/Drafts',1,0)")
+            c.execute("update subjects set subject='Test'")
+            c.execute("delete from labels where message_id=123");c.execute("insert into labels values(123,7)")
+        self.store=Store(self.root,self.base/'Accounts.sqlite',enabled=['owner@example.com']);self.store.accounts['GMAIL']['kind']='com.apple.account.Exchange'
+        self.assertEqual(mail_sender.status('lingering',self.base/'state',self.store)['state'],'outcome_unknown')  # within the grace period
+        with mail_sender.ledger(self.base/'state') as c,c:
+            c.execute("update sends set created=created-300, verification=json_set(verification,'$.created',created-300) where request_id='lingering'")
+        resolved=mail_sender.status('lingering',self.base/'state',self.store)
+        self.assertEqual(resolved['state'],'rejected');self.assertIn('still unsent',resolved['error'])
 
     def test_rejects_empty_new_message_body(self):
         for body in ['', '   \n\n']:
