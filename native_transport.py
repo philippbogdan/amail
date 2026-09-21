@@ -40,6 +40,7 @@ def script(request, operation, here, path, deadline):
     valid = (operation == 'compose' and type(reply.get('outgoing_id')) is int
              or operation == 'prepare' and reply.get('stage') == 'prepared'
              or operation == 'discard' and reply.get('stage') == 'discarded'
+             or operation == 'sweep' and reply.get('stage') == 'swept'
              or operation == 'close_stale' and reply.get('stage') == 'closed_stale'
              or operation == 'submit' and type(reply.get('mail_send_result')) is bool)
     if not valid:
@@ -78,16 +79,43 @@ def prepare_native(store, request, verification, state, here, path, deadline):
             time.sleep(.1)
         raise MailError('The saved Mail draft did not match the reviewed body, recipients, threading and attachments; nothing was sent')
     except BaseException:
-        discard(request, here, path)
+        discard(store, request, before, here, path)
         raise
 
 
-def discard(request, here, path):
-    """Best effort: close amail's own unsent compose window and remove Mail's autosaved copy of it."""
+def discard(store, request, before, here, path):
+    """Best effort: close amail's own unsent compose window, then remove Mail's autosaved copy.
+
+    The copy is deleted only once the server knows it (the cache row has a
+    remote id); deleting an unsynced draft leaves Mail a move it can never
+    complete, which jams its whole action queue.
+    """
     try:
         script(request, 'discard', here, path, time.monotonic() + 15)
     except Exception:
-        pass
+        return
+    sweep_synced_drafts(store, request, before, here, path)
+
+
+def sweep_synced_drafts(store, request, before, here, path, wait=20):
+    deadline = time.monotonic() + wait
+    swept = set()
+    while time.monotonic() < deadline:
+        rows = [row for row in store.query(account=request['account_id'], mailbox='drafts',
+                                           subject=request['subject'], limit=200)
+                if row['id'] not in before and row['id'] not in swept and row['subject'] == request['subject']]
+        ready = [row['id'] for row in rows if row['remote_id']]
+        if ready:
+            try:
+                script(dict(request, sweep_ids=ready), 'sweep', here, path, time.monotonic() + 15)
+            except Exception:
+                return len(swept)
+            swept.update(ready)
+        if not rows or all(row['id'] in swept for row in rows):
+            if swept or time.monotonic() > deadline - wait + 5:
+                return len(swept)
+        time.sleep(1)
+    return len(swept)
 
 
 def submit(store, request, verification, state, here, timeout, *, prepared=None, prepare_only=False):
@@ -127,15 +155,29 @@ def submit(store, request, verification, state, here, timeout, *, prepared=None,
                             uncertain=attempted) from exc
 
 
-def close_stale_window(verification, state, here):
+def close_stale_window(verification, state, here, store=None):
     """Best effort: close the compose window a dead process left for a request proven unsent."""
     request = {'sender': verification['sender'], 'formatted_sender': verification['sender'],
                'account_id': verification['account'], 'subject': verification['subject'],
-               'compose_title': verification['subject'], 'to': [], 'cc': [], 'bcc': [],
-               'draft_message_id': verification.get('draft_message_id') or ''}
+               'compose_title': verification['subject'], 'to': [], 'cc': [], 'bcc': []}
     try:
         state.mkdir(parents=True, exist_ok=True, mode=0o700)
         with tempfile.TemporaryDirectory(prefix='stale-', dir=state) as directory:
-            return script(request, 'close_stale', here, Path(directory) / 'request.json', time.monotonic() + 15).get('closed', 0)
+            path = Path(directory) / 'request.json'
+            closed = script(request, 'close_stale', here, path, time.monotonic() + 15).get('closed', 0)
+            if store is not None and verification.get('draft_message_id'):
+                ready = [row['id'] for row in store.query(account=verification['account'], mailbox='drafts',
+                                                          subject=verification['subject'], limit=200)
+                         if row['remote_id'] and _draft_matches(store, row, verification['draft_message_id'])]
+                if ready:
+                    script(dict(request, sweep_ids=ready), 'sweep', here, path, time.monotonic() + 15)
+            return closed
     except Exception:
         return None
+
+
+def _draft_matches(store, row, message_id):
+    try:
+        return store.read(store.ref(row))[0].get('message_id') == message_id
+    except (MailError, OSError):
+        return False

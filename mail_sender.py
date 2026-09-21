@@ -387,10 +387,12 @@ def send(store,args,state,here):
             if reply.get("mail_send_result") is True:
                 result["state"]="provider_acceptance_unverified"
                 update(state,request_id,result)
-                while time.perf_counter()-started<args.timeout:
+                while True:  # always look at least once, however slow the machine was
                     evidence=observed_acceptance(store,verification)
                     if evidence:
                         result.update(state="accepted",**evidence)
+                        break
+                    if time.perf_counter()-started>=args.timeout:
                         break
                     time.sleep(.1)
             elif reply.get("stage")=="compose":
@@ -461,7 +463,7 @@ def status(request_id,state,store):
                 result.update(state="rejected", error=reason + "; nothing was sent, so this request may be retried")
                 if "still unsent" in reason:
                     from native_transport import close_stale_window
-                    closed = close_stale_window(verification, state, Path(__file__).resolve().parent)
+                    closed = close_stale_window(verification, state, Path(__file__).resolve().parent, store)
                     if closed:
                         result["closed_stale_windows"] = closed
             elif result["state"] == "submitting":

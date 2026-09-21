@@ -54,6 +54,10 @@ An independent adversarial pass then drove the working tree black-box between th
 
 Live checks on macOS 27.0 with Mail 16.0 between the maintainer's own Gmail and Exchange accounts: a new Exchange message with an attachment, a Gmail reply through Mail, an Exchange forward carrying the original attachment, and an Exchange reply to a rich message with an institutional banner. Every sent and delivered copy began with the requested text, had no leading blank line or share wrapper, carried Mail's own quoted history below the text, and was accepted within about three seconds. 106 fixture tests pass.
 
+## Version 0.4.1 draft sweep
+
+Deleting a draft that Mail had autosaved but not yet uploaded queued a move Mail retried forever, visible as a stuck "Moving Messages" activity; 43 such dead actions accumulated on the maintainer's Exchange account during the 0.4.0 tests and were removed from Mail's action queue by hand. The sweep now waits for the cache row to carry a server id before deleting, and leaves an unsynced draft alone. A forced failed preparation on the live account closed its window, left no draft and added no action.
+
 ## Public packaging checks
 
 The public release passes 56 fixture tests, including an installation with no configured accounts, registration of a synthetic OAuth client, rejection of unknown accounts, and a repeat upgrade that preserves settings. The reusable agent skill passes its metadata validator.

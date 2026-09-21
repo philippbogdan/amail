@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1
+
+- Remove Mail's autosaved copy of a discarded compose window only once the server knows it. Deleting an unsynced draft left Mail a "Moving Messages" action it could never finish, which jammed every later move for the account until the queue was cleared by hand.
+
 ## 0.4.0
 
 - Compose replies and forwards with Mail's own `reply` and `forward` verbs and insert the reviewed text above the history Mail built, instead of replacing the whole body. Quoted history, attribution lines, forwarded attachments and thread headers are now Mail's own; amail no longer writes quote markers or forward headers.

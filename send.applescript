@@ -66,14 +66,42 @@ on run argv
                         set closed to closed + 1
                     end if
                 end repeat
-                -- The unsent draft that proved nothing was sent is clutter now.
-                set draftID to my normalID((q's objectForKey:"draft_message_id") as text)
-                if draftID is not "" then
-                    repeat with candidateID in my draftIDs(subjectText)
+                return "{\"stage\":\"closed_stale\",\"closed\":" & closed & "}"
+            end if
+            set theStage to operation
+            set outgoing to outgoing message id ((q's objectForKey:"outgoing_id") as integer)
+            if operation is "discard" then
+                -- Close amail's own compose window without saving. Mail's autosaved
+                -- copy is removed by a later "sweep" once the server knows it,
+                -- because deleting an unsynced draft leaves a move Mail can never finish.
+                delete outgoing
+                return "{\"stage\":\"discarded\"}"
+            end if
+            if operation is "sweep" then
+                set swept to 0
+                repeat with candidateID in ((q's objectForKey:"sweep_ids") as list)
+                    try
                         set candidate to first message of drafts mailbox whose id is (candidateID as integer)
-                        if my normalID(message id of candidate) is draftID then delete candidate
-                    end repeat
-                end if
+                        if (id of account of mailbox of candidate) is accountID then
+                            delete candidate
+                            set swept to swept + 1
+                        end if
+                    end try
+                end repeat
+                return "{\"stage\":\"swept\",\"swept_drafts\":" & swept & "}"
+            end if
+            if operation is "close_stale" then
+                -- A previous amail process died mid-submission and left its window
+                -- open. Called only after that request was proven unsent.
+                set closed to 0
+                -- Iterate by id: Mail cannot index "every outgoing message" directly.
+                repeat with candidateID in (get id of every outgoing message)
+                    set candidate to outgoing message id (candidateID as integer)
+                    if (subject of candidate) is subjectText then
+                        delete candidate
+                        set closed to closed + 1
+                    end if
+                end repeat
                 return "{\"stage\":\"closed_stale\",\"closed\":" & closed & "}"
             end if
             set theStage to operation
@@ -168,14 +196,3 @@ on jsonText(value)
     set valueString to valueString's stringByReplacingOccurrencesOfString:return withString:" "
     return valueString as text
 end jsonText
-
-on draftIDs(subjectText)
-    -- Mail refuses to index a filtered message list directly; collect ids first.
-    tell application "Mail"
-        try
-            return (get id of (messages of drafts mailbox whose subject is subjectText))
-        on error
-            return {}
-        end try
-    end tell
-end draftIDs
