@@ -69,7 +69,8 @@ on run argv
                 -- The unsent draft that proved nothing was sent is clutter now.
                 set draftID to my normalID((q's objectForKey:"draft_message_id") as text)
                 if draftID is not "" then
-                    repeat with candidate in (messages of drafts mailbox whose subject is subjectText)
+                    repeat with candidateID in my draftIDs(subjectText)
+                        set candidate to first message of drafts mailbox whose id is (candidateID as integer)
                         if my normalID(message id of candidate) is draftID then delete candidate
                     end repeat
                 end if
@@ -84,16 +85,22 @@ on run argv
                 -- composition began are touched.
                 delete outgoing
                 set knownDrafts to (q's objectForKey:"known_drafts") as list
+                set sweptIDs to {}
                 set swept to 0
                 set quietPasses to 0
                 -- Mail files the autosaved copy a few seconds after the window closes.
                 repeat 20 times
                     set found to 0
-                    repeat with candidate in (messages of drafts mailbox whose subject is subjectText)
-                        if (id of candidate) is not in knownDrafts and (id of account of mailbox of candidate) is accountID then
-                            delete candidate
-                            set swept to swept + 1
-                            set found to found + 1
+                    repeat with candidateID in my draftIDs(subjectText)
+                        set candidateID to candidateID as integer
+                        if candidateID is not in knownDrafts and candidateID is not in sweptIDs then
+                            set candidate to first message of drafts mailbox whose id is candidateID
+                            if (id of account of mailbox of candidate) is accountID then
+                                delete candidate
+                                set end of sweptIDs to candidateID
+                                set swept to swept + 1
+                                set found to found + 1
+                            end if
                         end if
                     end repeat
                     if found is 0 then
@@ -161,3 +168,14 @@ on jsonText(value)
     set valueString to valueString's stringByReplacingOccurrencesOfString:return withString:" "
     return valueString as text
 end jsonText
+
+on draftIDs(subjectText)
+    -- Mail refuses to index a filtered message list directly; collect ids first.
+    tell application "Mail"
+        try
+            return (get id of (messages of drafts mailbox whose subject is subjectText))
+        on error
+            return {}
+        end try
+    end tell
+end draftIDs
