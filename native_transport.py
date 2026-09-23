@@ -49,7 +49,7 @@ def script(request, operation, here, path, deadline):
 
 
 def prepare_native(store, request, verification, state, here, path, deadline):
-    from native_editor import enter_body, ensure_subject_available
+    from native_editor import editor_text, enter_body, ensure_subject_available
     from mail_sender import matches_content, canonical_address
     request['compose_title'] = request['subject']
     ensure_subject_available(request['subject'])
@@ -73,14 +73,49 @@ def prepare_native(store, request, verification, state, here, path, deadline):
                 if canonical_address(store, row['address'] or '') != canonical_address(store, request['sender']):
                     continue
                 if matches_content(store, item, parts, verification, draft=True) and item.get('message_id'):
-                    matched[item['message_id']] = item
+                    matched[item['message_id']] = item, row['id']
             if len(matched) == 1:
-                return next(iter(matched.values()))
+                item, draft_id = next(iter(matched.values()))
+                verified = editor_text(request['compose_title'])
+                # Keep time for submission and acceptance; an unsettled send still goes out.
+                item['drafts_settled'] = settle_draft(store, request, before, draft_id,
+                                                      min(deadline - 8, time.monotonic() + 20))
+                if editor_text(request['compose_title']) != verified:
+                    raise MailError('The compose window changed after its draft was verified; nothing was sent')
+                return item
             time.sleep(.1)
         raise MailError('The saved Mail draft did not match the reviewed body, recipients, threading and attachments; nothing was sent')
     except BaseException:
         discard(store, request, before, here, path)
         raise
+
+
+def settle_draft(store, request, before, draft_id, deadline, stable=1.0):
+    """Wait until the verified draft is the window's only saved copy, known to the server, with no Drafts action queued.
+
+    Mail saves the window more than once and deletes each superseded save. A
+    Drafts sync that lands between that local delete and the server delete
+    re-adds the old save locally. Sending then deletes every local copy, the
+    re-added one included; the server refuses to delete an item already gone,
+    and Mail retries that delete forever while every later copy, move and
+    delete for the account waits behind it (a stuck "Copying Messages").
+    """
+    since = None
+    while time.monotonic() < deadline:
+        rows = [row for row in store.query(account=request['account_id'], mailbox='drafts',
+                                           subject=request['subject'], limit=200)
+                if row['id'] not in before and row['subject'] == request['subject']]
+        settled = ([row['id'] for row in rows] == [draft_id] and rows[0]['remote_id']
+                   and not store.pending_actions(request['account_id'], 'drafts'))
+        now = time.monotonic()
+        if not settled:
+            since = None
+        elif since is None:
+            since = now
+        elif now - since >= stable:  # a sync already in flight could still re-add a copy
+            return True
+        time.sleep(.2)
+    return False
 
 
 def discard(store, request, before, here, path):
@@ -145,6 +180,8 @@ def submit(store, request, verification, state, here, timeout, *, prepared=None,
                 attempted = True
                 result = script(request, 'submit', here, path, deadline)
                 result.update(draft_message_id=draft['message_id'], format_verified=True)
+                if 'drafts_settled' in draft:
+                    result['drafts_settled'] = draft['drafts_settled']
                 return result
     except ProviderError as exc:
         if not attempted:

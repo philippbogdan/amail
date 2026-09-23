@@ -149,6 +149,63 @@ class FormattingTests(unittest.TestCase):
         self.assertEqual(calls, [('sweep', [123])])
         self.assertEqual(sweep_synced_drafts(store, request, {123}, self.base, self.base / 'r.json', wait=1.5), 0)  # pre-existing drafts are untouched
 
+    def test_editor_change_while_drafts_settle_stops_the_send(self):
+        from native_transport import prepare_native
+        from unittest.mock import MagicMock
+        store = MagicMock()
+        store.query.side_effect = lambda **kw: [] if store.query.call_count == 1 else [
+            {'id': 5, 'subject': 'Test', 'address': 'owner@example.com', 'remote_id': 1}]
+        store.read.return_value = ({'message_id': '<draft@example.com>', 'ref': 'fixture:draft'}, [])
+        request = {'subject': 'Test', 'body': 'Body', 'attach': [], 'account_id': 'GMAIL', 'sender': 'owner@example.com'}
+        for texts, settled in [(['Body', 'Body'], True), (['Body', 'Body '], None)]:
+            with self.subTest(texts=texts):
+                store.query.reset_mock()
+                operations = []
+                def fake_script(req, operation, *args):
+                    operations.append(operation)
+                    return {'outgoing_id': 7, 'stage': 'composed'} if operation == 'compose' else {'stage': operation + 'ed'}
+                with patch('native_transport.script', side_effect=fake_script), patch('native_editor.ensure_subject_available'), \
+                     patch('native_editor.enter_body'), patch('native_editor.editor_text', side_effect=texts), \
+                     patch('mail_sender.matches_content', return_value=True), patch('mail_sender.canonical_address', side_effect=lambda s, a: a), \
+                     patch('native_transport.settle_draft', return_value=True), patch('native_transport.sweep_synced_drafts', return_value=0):
+                    if settled:
+                        self.assertTrue(prepare_native(store, dict(request), {}, self.base, self.base, self.base / 'r.json', time.monotonic() + 30)['drafts_settled'])
+                        self.assertEqual(operations, ['compose', 'prepare'])
+                    else:
+                        with self.assertRaises(MailError):  # a keystroke after verification is not what was reviewed
+                            prepare_native(store, dict(request), {}, self.base, self.base, self.base / 'r.json', time.monotonic() + 30)
+                        self.assertEqual(operations, ['compose', 'prepare', 'discard'])
+
+    def test_send_waits_until_the_verified_draft_is_the_only_synced_copy(self):
+        from native_transport import settle_draft
+        import contextlib, sqlite3
+        from local_store import Store
+        with contextlib.closing(sqlite3.connect(self.db)) as c, c:
+            c.execute("insert into mailboxes values(7,'imap://GMAIL/Drafts',2,0)")
+            c.execute("update subjects set subject='Test'")
+            c.execute("insert into messages values(200,501,601,null,7,1700000100,1700000100,1,0,'',1,2,0,1)")
+            c.execute("insert into messages values(201,502,602,556,7,1700000200,1700000200,1,0,'',1,2,0,1)")
+        store = Store(self.root, self.base / 'Accounts.sqlite', enabled=['owner@example.com'])
+        request = {'subject': 'Test', 'account_id': 'GMAIL', 'sender': 'owner@example.com'}
+        settle = lambda: settle_draft(store, request, {123}, 201, time.monotonic() + 1.5, stable=.3)
+        self.assertIsNone(store.pending_actions('GMAIL', 'drafts'))  # no queue table: nothing to wait for
+        self.assertFalse(settle())  # a superseded save re-added by a Drafts sync is still present
+        with contextlib.closing(sqlite3.connect(self.db)) as c, c:
+            c.execute('update messages set deleted=1 where ROWID=200')
+            c.execute('create table local_message_actions(ROWID integer primary key,mailbox integer,source_mailbox integer,destination_mailbox integer,action_type integer,user_initiated integer)')
+            c.execute('insert into local_message_actions values(9,7,7,null,5,0)')
+            c.execute("insert into local_message_actions values(10,2,null,null,3,null)")
+        self.assertEqual(store.pending_actions('GMAIL', 'drafts'), 1)
+        self.assertEqual(store.pending_actions('GMAIL'), 2)
+        self.assertFalse(settle())  # Mail still has a Drafts delete to replay
+        with contextlib.closing(sqlite3.connect(self.db)) as c, c:
+            c.execute('delete from local_message_actions where ROWID=9')
+            c.execute('update messages set remote_id=null where ROWID=201')
+        self.assertFalse(settle())  # the server does not know the verified draft yet
+        with contextlib.closing(sqlite3.connect(self.db)) as c, c:
+            c.execute('update messages set remote_id=556 where ROWID=201')
+        self.assertTrue(settle())
+
     def test_empty_plain_draft_fallback_keeps_quote_semantics(self):
         item, _ = self.put('', '<blockquote>Body</blockquote>')
         self.assertEqual(item['body'], '> Body')
