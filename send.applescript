@@ -90,57 +90,6 @@ on run argv
                 end repeat
                 return "{\"stage\":\"swept\",\"swept_drafts\":" & swept & "}"
             end if
-            if operation is "close_stale" then
-                -- A previous amail process died mid-submission and left its window
-                -- open. Called only after that request was proven unsent.
-                set closed to 0
-                -- Iterate by id: Mail cannot index "every outgoing message" directly.
-                repeat with candidateID in (get id of every outgoing message)
-                    set candidate to outgoing message id (candidateID as integer)
-                    if (subject of candidate) is subjectText then
-                        delete candidate
-                        set closed to closed + 1
-                    end if
-                end repeat
-                return "{\"stage\":\"closed_stale\",\"closed\":" & closed & "}"
-            end if
-            set theStage to operation
-            set outgoing to outgoing message id ((q's objectForKey:"outgoing_id") as integer)
-            if operation is "discard" then
-                -- Close amail's own compose window without saving, then remove the
-                -- copy Mail may have autosaved into Drafts meanwhile. Only drafts
-                -- of this account with this subject that did not exist before
-                -- composition began are touched.
-                delete outgoing
-                set knownDrafts to (q's objectForKey:"known_drafts") as list
-                set sweptIDs to {}
-                set swept to 0
-                set quietPasses to 0
-                -- Mail files the autosaved copy a few seconds after the window closes.
-                repeat 20 times
-                    set found to 0
-                    repeat with candidateID in my draftIDs(subjectText)
-                        set candidateID to candidateID as integer
-                        if candidateID is not in knownDrafts and candidateID is not in sweptIDs then
-                            set candidate to first message of drafts mailbox whose id is candidateID
-                            if (id of account of mailbox of candidate) is accountID then
-                                delete candidate
-                                set end of sweptIDs to candidateID
-                                set swept to swept + 1
-                                set found to found + 1
-                            end if
-                        end if
-                    end repeat
-                    if found is 0 then
-                        set quietPasses to quietPasses + 1
-                    else
-                        set quietPasses to 0
-                    end if
-                    if swept > 0 and quietPasses ≥ 2 then exit repeat
-                    delay 0.5
-                end repeat
-                return "{\"stage\":\"discarded\",\"swept_drafts\":" & swept & "}"
-            end if
             if operation is "prepare" then
                 set theStage to "prepare-recipients"
                 if subject of outgoing is not marker then error "Compose identity changed"

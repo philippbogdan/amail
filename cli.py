@@ -20,7 +20,7 @@ def parser():
     for flag in ("json", "plain", "tsv"):
         style.add_argument("--" + flag, action="store_true", default=argparse.SUPPRESS)
     p = argparse.ArgumentParser(prog="amail", description="Fast email reads and verified, paced sending.", parents=[common], allow_abbrev=False)
-    p.add_argument("--version", action="version", version="amail 0.4.1")
+    p.add_argument("--version", action="version", version="amail 0.4.2")
     sub = p.add_subparsers(dest="command", required=True)
     descriptions = {
         "accounts": "List enabled accounts; --available discovers accounts without enabling them",
@@ -377,6 +377,12 @@ def run(args, store, state, here=HERE):
                 result.append({"account": account["name"], **bridge(account["uuid"], "sync", here, state)})
             else:
                 info = {"account": account["name"], "local_cache": "readable", "aliases": account["addresses"], "send_route": "mail_editor"}
+                queued = store.pending_actions(account["uuid"])
+                if queued is not None:
+                    info["mail_queued_server_actions"] = queued
+                    if queued:
+                        info["mail_queue_note"] = ("Mail has server copies, moves or deletes still queued for this account; if the count stays "
+                                                   "above zero while Mail is idle, one action is failing and holding back the rest (docs/SETUP.md, Sending through Mail)")
                 try:
                     info["automation"] = bridge(account["uuid"], "doctor", here, state)
                     from native_editor import Accessibility

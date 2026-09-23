@@ -291,6 +291,15 @@ class SubmissionWatch:
             time.sleep(.05)
 
 
+def editor_text(title):
+    """The exact text of the uniquely titled compose window's editor, read without focusing it."""
+    ax = Accessibility()
+    try:
+        return ax.body_text(ax.body(ax.window(ax.mail(), title)))
+    finally:
+        ax.close()
+
+
 def squash(value):
     """Whitespace-insensitive comparison key for editor text."""
     return ''.join(value.replace('\ufffc', '').split())

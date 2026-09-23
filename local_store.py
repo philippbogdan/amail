@@ -462,6 +462,24 @@ class Store:
         with self.connect() as c:
             return [dict(r) for r in c.execute(sql,params+[limit])]
 
+    def pending_actions(self, account, mailbox="*"):
+        """Count server actions Mail has queued but not yet replayed for these mailboxes.
+
+        Mail replays them in order, one account at a time, so one that never
+        completes holds back every later copy, move and delete. None when the
+        queue is not readable in this Mail version.
+        """
+        ids = [b["id"] for b in self.mailboxes(account, mailbox)]
+        if not ids:
+            return 0
+        slots = ",".join("?" for _ in ids)
+        with self.connect() as c:
+            try:
+                return c.execute(f"select count(*) from local_message_actions where mailbox in ({slots}) "
+                                 f"or source_mailbox in ({slots}) or destination_mailbox in ({slots})", ids * 3).fetchone()[0]
+            except sqlite3.OperationalError:
+                return None
+
     @staticmethod
     def cursor(row):
         return base64.urlsafe_b64encode(json.dumps({"date": row["date_received"], "id": row["id"]}).encode()).decode().rstrip("=")
