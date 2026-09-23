@@ -58,6 +58,12 @@ Live checks on macOS 27.0 with Mail 16.0 between the maintainer's own Gmail and 
 
 Deleting a draft that Mail had autosaved but not yet uploaded queued a move Mail retried forever, visible as a stuck "Moving Messages" activity; 43 such dead actions accumulated on the maintainer's Exchange account during the 0.4.0 tests and were removed from Mail's action queue by hand. The sweep now waits for the cache row to carry a server id before deleting, and leaves an unsynced draft alone. A forced failed preparation on the live account closed its window, left no draft and added no action.
 
+## Version 0.4.2 settled drafts
+
+A 32-message Exchange batch on 0.4.1 left Mail's "Copying Messages" activity stuck at 1 of 60. Mail's action log showed the cause on the second message: its compose window was saved twice, the first save was deleted locally, a Drafts sync re-added it from the server moments before Mail deleted it there, and sending then deleted both local copies. Exchange refused the delete of the item already gone, Mail logged it as a connection error and replayed it about 12,000 times in eight minutes, and the 31 later Sent copies queued behind it. All 32 messages had been delivered. Restarting Mail did not clear it; removing that one action from Mail's queue by hand drained the rest in about ten seconds.
+
+With the settle gate, two runs of eight internal Exchange-to-Gmail messages each deleted exactly one draft per send, Mail logged no replay errors, the action queue drained to zero after every message, and three superseded saves re-added by a sync were waited out rather than sent over. Each send took about 3 to 7 seconds instead of 2 to 3. During the first run someone used the Mac: Mail's log shows one compose window sent from Mail's own Send command while amail was still waiting for its draft, and one received a trailing space typed after verification. Both messages were delivered and have been reconciled in the ledger by hand. The editor re-check now stops a send like the second one before submission.
+
 ## Public packaging checks
 
 The public release passes 56 fixture tests, including an installation with no configured accounts, registration of a synthetic OAuth client, rejection of unknown accounts, and a repeat upgrade that preserves settings. The reusable agent skill passes its metadata validator.

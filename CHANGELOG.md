@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.2
+
+- Submit only once Mail's Drafts state has settled: the verified draft is the compose window's only saved copy, the server knows it, and Mail has no Drafts action queued (up to 20 seconds). Mail saves a window more than once; a Drafts sync landing between a superseded save's local and server deletes re-added it locally, sending then asked the server to delete it a second time, and Mail retried that failing delete forever. Every later Sent copy, move and delete for the account queued behind it, seen as a "Copying Messages" activity that never finished. Delivery was never affected. Results record `drafts_settled`.
+- Stop the send and close the window if the editor text changes while the drafts settle, so a stray keystroke is never sent unreviewed.
+- `amail doctor` reports `mail_queued_server_actions` per account; a count that stays above zero while Mail is idle means a queued action is failing.
+- Remove an unreachable duplicate of the discard and stale-window handlers from the compose script.
+
 ## 0.4.1
 
 - Remove Mail's autosaved copy of a discarded compose window only once the server knows it. Deleting an unsynced draft left Mail a "Moving Messages" action it could never finish, which jammed every later move for the account until the queue was cleared by hand.

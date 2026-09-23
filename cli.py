@@ -20,7 +20,7 @@ def parser():
     for flag in ("json", "plain", "tsv"):
         style.add_argument("--" + flag, action="store_true", default=argparse.SUPPRESS)
     p = argparse.ArgumentParser(prog="amail", description="Fast email reads and verified, paced sending.", parents=[common], allow_abbrev=False)
-    p.add_argument("--version", action="version", version="amail 0.4.1")
+    p.add_argument("--version", action="version", version="amail 0.4.2")
     sub = p.add_subparsers(dest="command", required=True)
     descriptions = {
         "accounts": "List enabled accounts; --available discovers accounts without enabling them",
