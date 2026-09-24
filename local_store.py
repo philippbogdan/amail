@@ -98,7 +98,7 @@ class BodyLayout(HTMLParser):
         self.text += "\n" * max(0, count - existing)
 
     def handle_starttag(self, tag, attrs):
-        attrs = dict(attrs)
+        attrs = {name: value or "" for name, value in attrs}  # a bare attribute (<td style>) parses as None
         style = re.sub(r"\s+|!important", "", attrs.get("style", "").lower())
         hidden = tag in {"head", "script", "style", "template"} or "hidden" in attrs or any(
             rule in {"display:none", "visibility:hidden", "visibility:collapse", "mso-hide:all"}

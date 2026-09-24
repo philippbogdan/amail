@@ -227,6 +227,10 @@ class FormattingTests(unittest.TestCase):
         self.assertFalse(self.verifies('Body', 'Body',
             '<span style="display: none !important">preview</span><blockquote>Body</blockquote>'))
 
+    def test_valueless_attributes_are_readable(self):
+        item, parts = self.put('Body', '<table><tr><td style class>Body</td></tr></table>')
+        self.assertFalse(item['body_format']['html_entire_body_quoted'])
+
     def test_html_source_indentation_does_not_add_rendered_lines(self):
         self.assertTrue(self.verifies('First\n\nSecond', 'First\n\nSecond',
             '<html>\n<head><title>Subject</title></head>\n<body>\nFirst<br>\n<br>\nSecond\n</body></html>'))
