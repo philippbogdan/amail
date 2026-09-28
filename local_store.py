@@ -211,9 +211,16 @@ def body_texts(msg):
             "html": wire_body(layout.text.rstrip(" \n")) if has_html else None}
 
 
+def _without_line_end_spaces(text):
+    # Mail can leave a trailing space on a line of the filed plain part (a
+    # format=flowed soft break); it is invisible and never the reviewed text.
+    return "\n".join(line.rstrip(" \t") for line in text.split("\n"))
+
+
 def starts_with_paragraphs(actual, requested):
     """True when the message text begins with the requested text as whole paragraphs."""
     actual, requested = wire_body(actual), wire_body(requested)
+    actual, requested = _without_line_end_spaces(actual), _without_line_end_spaces(requested)
     if not requested:
         return True
     if actual == requested:
