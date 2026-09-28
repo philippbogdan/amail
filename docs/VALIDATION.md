@@ -64,6 +64,10 @@ A 32-message Exchange batch on 0.4.1 left Mail's "Copying Messages" activity stu
 
 With the settle gate, two runs of eight internal Exchange-to-Gmail messages each deleted exactly one draft per send, Mail logged no replay errors, the action queue drained to zero after every message, and three superseded saves re-added by a sync were waited out rather than sent over. Each send took about 3 to 7 seconds instead of 2 to 3. During the first run someone used the Mac: Mail's log shows one compose window sent from Mail's own Send command while amail was still waiting for its draft, and one received a trailing space typed after verification. Both messages were delivered and have been reconciled in the ledger by hand. The editor re-check now stops a send like the second one before submission.
 
+## Version 0.4.3 line-end spaces
+
+An Exchange batch send on 0.4.2 stayed `provider_acceptance_unverified` although Mail had filed the Sent copy and synced it to the server. The only difference from the reviewed text was a trailing space after the final line of the filed plain part, so the whole-paragraph check failed and the ledger gate blocked all further sends on the account. With 0.4.3 the same ledger entry reconciles from its synced Sent item, read-only. 116 fixture tests pass.
+
 ## Public packaging checks
 
 The public release passes 56 fixture tests, including an installation with no configured accounts, registration of a synthetic OAuth client, rejection of unknown accounts, and a repeat upgrade that preserves settings. The reusable agent skill passes its metadata validator.
