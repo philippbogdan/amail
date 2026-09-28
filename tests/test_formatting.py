@@ -216,6 +216,13 @@ class FormattingTests(unittest.TestCase):
         self.assertFalse(self.verifies('Body', 'Body',
             '<html><head><title>Not visible</title></head><body><blockquote>Body</blockquote></body></html>'))
 
+    def test_trailing_space_on_a_filed_line_still_verifies(self):
+        # Mail can file the last line of the plain part with a trailing space.
+        self.assertTrue(self.verifies('Hi Alex,\n\nA question?\n\nSam', 'Hi Alex,\n\nA question?\n\nSam '))
+        self.assertTrue(self.verifies('Hi Alex,\nA question?', 'Hi Alex, \nA question?'))
+        self.assertFalse(self.verifies('Sam', 'Sam extra'))
+        self.assertFalse(self.verifies('Body', ' Body'))
+
     def test_extra_leading_blank_line_is_rejected(self):
         self.assertFalse(self.verifies('Body', '\nBody'))
         self.assertFalse(self.verifies('Body', 'Body', '<body><br>Body</body>'))
