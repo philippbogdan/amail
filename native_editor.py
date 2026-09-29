@@ -112,12 +112,17 @@ class Accessibility:
             raise MailError('The amail compose window is missing or ambiguous')
         return matches[0]
 
-    def body(self, window):
-        matches = [element for element in self.walk(window)
-                   if self.text(self.attr(element, 'AXRole')) == 'AXWebArea']
-        if len(matches) != 1:
-            raise MailError('Cannot identify one Mail body editor')
-        return matches[0]
+    def body(self, window, wait=5):
+        # A freshly launched Mail can show the window before its editor has loaded.
+        deadline = time.monotonic() + wait
+        while True:
+            matches = [element for element in self.walk(window)
+                       if self.text(self.attr(element, 'AXRole')) == 'AXWebArea']
+            if len(matches) == 1:
+                return matches[0]
+            if matches or time.monotonic() >= deadline:
+                raise MailError('Cannot identify one Mail body editor')
+            time.sleep(.1)
 
     def set_true(self, element, attribute):
         value = ctypes.c_void_p.in_dll(self.cf, 'kCFBooleanTrue').value

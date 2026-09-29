@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from gmail_backend import ProviderError
 from local_store import MailError
+from mail_health import before_compose, record_compose
 
 
 def script(request, operation, here, path, deadline):
@@ -56,7 +57,10 @@ def prepare_native(store, request, verification, state, here, path, deadline):
     before = {row['id'] for row in store.query(account=request['account_id'], mailbox='drafts',
                                               subject=request['subject'], limit=10000)}
     request['known_drafts'] = sorted(before)  # discard may sweep Mail's autosaved copy of our window
-    composed = script(request, 'compose', here, path, deadline)
+    try:
+        composed = script(request, 'compose', here, path, deadline)
+    finally:
+        record_compose(state)  # Mail keeps a thread for every window it opens, even one that fails
     request['outgoing_id'] = composed['outgoing_id']
     try:
         enter_body(request['compose_title'], request['body'], request['attach'])
@@ -170,6 +174,10 @@ def submit(store, request, verification, state, here, timeout, *, prepared=None,
                     time.sleep(.05)
             with tempfile.TemporaryDirectory(prefix='compose-', dir=state) as directory:
                 path = Path(directory) / 'request.json'
+                started = time.monotonic()
+                restarted = before_compose(state)
+                if restarted:
+                    deadline += time.monotonic() - started  # a planned Mail restart is not this message's time
                 draft = prepare_native(store, request, verification, state, here, path, deadline)
                 verification['draft_message_id'] = draft['message_id']
                 if prepared:
@@ -182,6 +190,8 @@ def submit(store, request, verification, state, here, timeout, *, prepared=None,
                 result.update(draft_message_id=draft['message_id'], format_verified=True)
                 if 'drafts_settled' in draft:
                     result['drafts_settled'] = draft['drafts_settled']
+                if restarted:
+                    result.update(restarted)
                 return result
     except ProviderError as exc:
         if not attempted:

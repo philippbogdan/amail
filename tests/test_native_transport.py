@@ -21,6 +21,9 @@ class NativeTransportTests(unittest.TestCase):
                         'account_id': 'ACCOUNT', 'to': ['self@example.net'], 'cc': [], 'bcc': [],
                         'subject': 'Test', 'body': 'Body', 'attach': []}
         self.draft = {'message_id': '<checked@example.com>', 'ref': 'fixture:draft'}
+        health = patch('native_transport.before_compose', return_value=None)
+        self.before_compose = health.start()
+        self.addCleanup(health.stop)
 
     def test_validation_and_identity_persistence_precede_submission(self):
         events = []
@@ -38,6 +41,18 @@ class NativeTransportTests(unittest.TestCase):
             result = submit(None, self.request, {}, self.state, self.state, 2, prepared=persist)
         self.assertTrue(result['format_verified'])
         self.assertEqual(events, ['prepare', 'persist', 'submit'])
+
+    def test_planned_mail_restart_does_not_spend_the_message_deadline(self):
+        def restart(state):
+            time.sleep(.3)
+            return {'mail_restarted_after_composes': 40}
+        self.before_compose.side_effect = restart
+        def send(*args):
+            self.assertGreater(args[4] - time.monotonic(), .2)
+            return {'mail_send_result': True}
+        with patch('native_transport.prepare_native', return_value=self.draft), patch('native_transport.script', side_effect=send):
+            result = submit(None, self.request, {}, self.state, self.state, .4)
+        self.assertEqual(result['mail_restarted_after_composes'], 40)
 
     def test_prepare_only_never_submits(self):
         self.request['outgoing_id'] = 17
