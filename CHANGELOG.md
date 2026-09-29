@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.4
+
+- Restart Mail between messages before it hangs. Mail 16 leaves one worker thread blocked for good behind every compose window it opens, sent or not (its own Command-N included); around sixty exhaust its dispatch thread pool and Mail stops responding, which a long batch reached every time. amail counts the compose windows it opens per Mail process and, after 40, quits and reopens Mail before the next message when no compose window is open. With a window of yours open it waits, and past 55 it refuses with a message instead of risking the hang. The restart does not count against the message's timeout; the send result records `mail_restarted_after_composes`.
+- Refuse to compose when macOS has paused Mail. Once the system runs out of swap, the kernel suspends large apps; a paused Mail answers nothing, so sends used to time out. amail now says so and how to resume Mail.
+- Wait up to five seconds for the compose editor to load, so the first message after Mail starts is not rejected with "Cannot identify one Mail body editor".
+- `amail doctor` reports `mail_paused`, `mail_composes_since_launch` and `mail_restart_after_composes`.
+
 ## 0.4.3
 
 - Confirm a sent copy whose filed plain text carries a trailing space on a line. Mail can end the last line of the plain part with a space; verification compared it character for character, so an accepted send stayed `provider_acceptance_unverified` and the reconciliation gate then refused every later send on the account. Trailing spaces and tabs at line ends are now ignored when checking that a message begins with the reviewed text; leading space, extra words and paragraph layout still fail verification.
