@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from gmail_backend import ProviderError
-from native_transport import submit, script, discard
+from native_transport import submit, script, discard, close_stale_window
 
 
 class NativeTransportTests(unittest.TestCase):
@@ -178,3 +178,21 @@ class NativeTransportTests(unittest.TestCase):
                 script(self.request, 'submit', self.state, self.state / 'request.json', time.monotonic() + 5)
         self.assertFalse(raised.exception.uncertain)
         process.assert_not_called()
+
+    def test_only_the_window_the_request_opened_is_closed(self):
+        verification = {'sender': 'owner@example.com', 'account': 'ACCOUNT', 'subject': 'Re: Dinner',
+                        'compose_window': {'outgoing_id': 7, 'mail_process': '10 fixture'}}
+        with patch('native_transport.mail_process', return_value='10 fixture'), \
+                patch('native_transport.script', return_value={'stage': 'closed_stale', 'closed': 1}) as run:
+            self.assertEqual(close_stale_window(verification, self.state, self.state), 1)
+        self.assertEqual(run.call_args[0][0]['outgoing_id'], 7)
+        # After a Mail restart the id names nothing, and a window with that subject could be the user's own.
+        with patch('native_transport.mail_process', return_value='11 restarted'), patch('native_transport.script') as run:
+            self.assertEqual(close_stale_window(verification, self.state, self.state), 0)
+        run.assert_not_called()
+
+    def test_a_failed_sweep_never_replaces_the_error_that_led_to_the_discard(self):
+        from local_store import MailError
+        with patch('native_transport.script', return_value={'stage': 'discarded'}), \
+                patch('native_transport.sweep_synced_drafts', side_effect=MailError('Mail cache is busy')):
+            discard(None, dict(self.request, compose_title='Test'), set(), self.state, self.state / 'request.json')

@@ -304,19 +304,37 @@ def batch_run(store, state, here, batch_id, *, resume=False, timeout=SEND_TIMEOU
             batch_control(state, batch_id, "pause")
             raise
         finally:
-            clear_finished_locks(state)  # while this worker still holds its own
+            clear_finished_locks(state, batch_id)
     return batch_show(state, batch_id, include_messages=False)
 
 
-def clear_finished_locks(state):
-    """Remove the worker lock of every completed or cancelled batch. Only an unfinished batch can be run."""
+def clear_finished_locks(state, held):
+    """Remove the worker lock of every completed or cancelled batch that no worker holds, and the caller's own.
+
+    A cancelled batch can still have a worker finishing its current message,
+    so a lock is removed only after taking it. The caller holds the lock of
+    the batch named held and removes it without asking.
+    """
     try:
         with ledger(state) as c:
             finished = [row[0] for row in c.execute("select id from batches where state in ('completed','cancelled')")]
-    except sqlite3.Error:
-        return  # housekeeping only, the next worker tries again
-    for batch_id in finished:
-        (state / (batch_id + ".lock")).unlink(missing_ok=True)
+        for batch_id in finished:
+            path = state / (batch_id + ".lock")
+            if batch_id == held:
+                path.unlink(missing_ok=True)
+                continue
+            try:
+                fd = os.open(path, os.O_RDWR)
+            except FileNotFoundError:
+                continue
+            with os.fdopen(fd, "w") as lock:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    continue
+                path.unlink(missing_ok=True)
+    except (sqlite3.Error, OSError):
+        pass  # housekeeping only, the next worker tries again
 
 
 def input_schema(kind):

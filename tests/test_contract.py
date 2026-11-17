@@ -52,8 +52,9 @@ class ContractTests(unittest.TestCase):
     def test_a_compose_window_mail_would_not_close_is_reported_then_closed(self):
         from mail_sender import status
         state = self.base / 'left-open'
+        window = {'outgoing_id': 7, 'mail_process': '10 fixture'}
         def refuse(store, request, verification, state, here, timeout, prepared=None, prepare_only=False):
-            request['compose_window_left_open'] = True  # as native_transport.discard records it
+            request.update(compose_window_left_open=True, compose_window=window)  # as native_transport records them
             raise ProviderError('The saved Mail draft did not match', uncertain=False)
         args = self.args(dry_run=False, request_id='left-open')
         with patch('native_transport.submit', side_effect=refuse):
@@ -63,30 +64,51 @@ class ContractTests(unittest.TestCase):
         self.assertIn('amail status', first['compose_window_note'])
         with patch('native_transport.close_stale_window', return_value=None):  # Mail still does not answer
             self.assertTrue(status('left-open', state, self.store)['compose_window_left_open'])
-        with patch('native_transport.close_stale_window', return_value=1):
+        with patch('native_transport.close_stale_window', return_value=1) as close:
             closed = status('left-open', state, self.store)
+        self.assertEqual(close.call_args[0][0]['compose_window'], window)  # the window it opened, not any with that subject
         self.assertNotIn('compose_window_left_open', closed)
+        self.assertNotIn('compose_window', closed)
         self.assertEqual(closed['closed_stale_windows'], 1)
         with patch('native_transport.close_stale_window', side_effect=AssertionError('already closed')):
             self.assertEqual(status('left-open', state, self.store)['state'], 'rejected')
 
-    def test_an_explicit_retry_first_closes_the_window_its_last_attempt_left(self):
-        state = self.base / 'left-open-retry'
-        events = []
-        def refuse(store, request, verification, state, here, timeout, prepared=None, prepare_only=False):
-            request['compose_window_left_open'] = True
-            raise ProviderError('The saved Mail draft did not match', uncertain=False)
-        def accept(*args, **kwargs):
-            events.append('submit')
-            return SUBMITTED
-        with patch('native_transport.submit', side_effect=refuse):
-            send(self.store, self.args(dry_run=False, request_id='left-open'), state, self.base)
-        with patch('native_transport.close_stale_window', side_effect=lambda *a: events.append('close') or 1), \
-                patch('native_transport.submit', side_effect=accept), patch('mail_sender.observed_acceptance', return_value=ACCEPTED):
-            retry = send(self.store, self.args(dry_run=False, request_id='left-open', retry_rejected=True), state, self.base)
-        self.assertEqual(events, ['close', 'submit'])
-        self.assertEqual(retry['state'], 'accepted')
-        self.assertNotIn('compose_window_left_open', retry)
+    def test_the_next_send_from_the_account_first_closes_a_window_an_earlier_attempt_left(self):
+        for retry in (True, False):
+            with self.subTest(retry_of_the_same_request=retry):
+                state = self.base / ('left-open-' + str(retry))
+                events = []
+                def refuse(store, request, verification, state, here, timeout, prepared=None, prepare_only=False):
+                    request.update(compose_window_left_open=True, compose_window={'outgoing_id': 7, 'mail_process': '10 fixture'})
+                    raise ProviderError('The saved Mail draft did not match', uncertain=False)
+                def accept(*args, **kwargs):
+                    events.append('submit')
+                    return SUBMITTED
+                with patch('native_transport.submit', side_effect=refuse):
+                    send(self.store, self.args(dry_run=False, request_id='left-open'), state, self.base)
+                following = self.args(dry_run=False, request_id='left-open', retry_rejected=True) if retry else self.args(dry_run=False, request_id='another')
+                with patch('native_transport.close_stale_window', side_effect=lambda *a: events.append('close') or 1), \
+                        patch('native_transport.submit', side_effect=accept), patch('mail_sender.observed_acceptance', return_value=ACCEPTED):
+                    result = send(self.store, following, state, self.base)
+                self.assertEqual(events, ['close', 'submit'])
+                self.assertEqual(result['state'], 'accepted')
+                self.assertNotIn('compose_window_left_open', result)
+
+    def test_a_reconciliation_that_lost_a_race_leaves_the_newer_result_alone(self):
+        from mail_sender import status
+        state = self.base / 'race'
+        with patch('native_transport.submit', return_value=SUBMITTED), patch('mail_sender.observed_acceptance', return_value=None):
+            send(self.store, self.args(dry_run=False, request_id='slow', timeout=.1), state, self.base)
+        newer = {'request_id': 'slow', 'state': 'accepted', 'sent_ref': 'fixture:settled-elsewhere'}
+        def meanwhile(store, verification):  # another process settles the request while this one is still asking Mail
+            with ledger(state) as c, c:
+                c.execute("update sends set state='accepted',result=? where request_id='slow'", (json.dumps(newer),))
+            return None
+        with patch('mail_sender.observed_acceptance', side_effect=meanwhile):
+            seen = status('slow', state, self.store)
+        self.assertEqual((seen['state'], seen['sent_ref']), ('accepted', 'fixture:settled-elsewhere'))
+        with ledger(state) as c:
+            self.assertEqual(json.loads(c.execute("select result from sends where request_id='slow'").fetchone()[0]), newer)
 
     def test_a_new_send_first_settles_what_earlier_sends_left_open(self):
         state = self.base / 'reconcile'

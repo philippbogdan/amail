@@ -95,6 +95,19 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(done['state'],'completed');self.assertFalse((state/(plan['id']+'.lock')).exists())
         self.assertTrue(old.exists())
 
+    def test_a_cancelled_batch_keeps_its_lock_while_a_worker_still_holds_it(self):
+        import fcntl, os
+        from workflows import clear_finished_locks
+        state=self.base/'state';plan=batch_plan(self.store,state,self.manifest())
+        batch_control(state,plan['id'],'cancel')
+        path=state/(plan['id']+'.lock')
+        with open(path,'w') as worker:  # a worker finishing its current message
+            fcntl.flock(worker,fcntl.LOCK_EX)
+            clear_finished_locks(state,'batch-of-the-caller')
+            self.assertTrue(path.exists())
+        clear_finished_locks(state,'batch-of-the-caller')
+        self.assertFalse(path.exists())
+
     def test_batch_passes_its_timeout_to_every_message(self):
         state=self.base/'state';plan=batch_plan(self.store,state,self.manifest());seen=[]
         def sender(store,args,state,here):seen.append(args.timeout);return {'state':'accepted','request_id':args.request_id}

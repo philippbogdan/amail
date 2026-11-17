@@ -124,8 +124,10 @@ class Accessibility:
     def mail(self, *, allow_absent=False):
         if not self.ax.AXIsProcessTrusted():
             raise MailError('Allow Accessibility access for the invoking terminal or agent host in System Settings, then run amail doctor')
-        result = subprocess.run(['pgrep', '-x', 'Mail'], capture_output=True, text=True, timeout=2)
-        pids = result.stdout.split()
+        try:
+            pids = subprocess.run(['pgrep', '-x', 'Mail'], capture_output=True, text=True, timeout=2).stdout.split()
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise MailError('Cannot identify one running Apple Mail process') from exc
         if not pids and allow_absent:
             return None
         if len(pids) != 1:

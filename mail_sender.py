@@ -17,7 +17,7 @@ from configuration import SEND_TIMEOUT_MAX
 from local_store import MailError, parse_emlx, wire_body
 
 
-WINDOW_LEFT = ("Mail did not close the unsent compose window. amail status REQUEST_ID, or a retry with --retry-rejected, "
+WINDOW_LEFT = ("Mail did not close the unsent compose window. amail status REQUEST_ID, or the next send from this account, "
                "closes it")
 
 
@@ -178,12 +178,20 @@ def prepare(store,args,state=None,here=None):
     return account,request,verification,fingerprint
 
 
-def update(state,request_id,result):
+def update(state,request_id,result,read=None):
+    """Store a request's result. Return whether it was stored.
+
+    A reconciliation passes read, the stored result it started from, and loses
+    to any process that changed the request meanwhile. Otherwise a slow status
+    check could write a stale rejection over a send that has since gone out.
+    """
     with ledger(state) as c, c:
         previous = c.execute("select account,purpose,state from sends where request_id=?", (request_id,)).fetchone()
-        if previous and previous["purpose"] == "outreach" and previous["state"] != result["state"] and result["state"] in {"accepted", "rejected"}:
+        stored = c.execute("update sends set state=?,result=? where request_id=?" + (" and result=?" if read is not None else ""),
+                           (result["state"],json.dumps(result),request_id) + ((read,) if read is not None else ())).rowcount == 1
+        if stored and previous and previous["purpose"] == "outreach" and previous["state"] != result["state"] and result["state"] in {"accepted", "rejected"}:
             c.execute("update pacing set next_at=max(next_at,?+gap_seconds) where account=?", (time.time(), previous["account"]))
-        c.execute("update sends set state=?,result=? where request_id=?",(result["state"],json.dumps(result),request_id))
+    return stored
 
 
 def body_matches(item, verification, *, draft=False):
@@ -331,9 +339,7 @@ def send(store,args,state,here):
     now=time.time()
     verification["created"]=now
     purpose = getattr(args, "purpose", "personal")
-    if getattr(args, "retry_rejected", False):
-        close_left_window(state, request_id, store, here)
-    reconcile_pending(state, store, account["uuid"], request_id)
+    reconcile_pending(state, store, account["uuid"], request_id, here)
     with ledger(state) as c:
         c.execute("begin immediate")
         prior=c.execute("select * from sends where request_id=?",(request_id,)).fetchone()
@@ -418,24 +424,33 @@ def send(store,args,state,here):
     if request.get("timings_ms"):
         result["timings_ms"]=request["timings_ms"]
     if request.get("compose_window_left_open"):
-        result.update(compose_window_left_open=True, compose_window_note=WINDOW_LEFT)
+        result.update(compose_window_left_open=True, compose_window=request.get("compose_window"), compose_window_note=WINDOW_LEFT)
     update(state,request_id,result)
     return result
 
 
-def reconcile_pending(state, store, account, request_id):
+def reconcile_pending(state, store, account, request_id, here=None):
     """Settle what earlier sends on this account left open, exactly as amail status would, before a new send is refused.
 
     A send whose Sent copy has since synced becomes accepted and one whose
     process died before Mail was asked to send becomes rejected. Anything
-    still unknown stays unknown and goes on blocking the account.
+    still unknown stays unknown and goes on blocking the account. A compose
+    window that a rejected attempt could not close is closed, this request's
+    own included, so it cannot refuse the next message with its subject.
     """
     with ledger(state) as c:
         pending=[row[0] for row in c.execute("select request_id from sends where account=? and request_id!=? and state in "
                                              "('submitting','provider_acceptance_unverified','outcome_unknown')",(account,request_id))]
+        left=[row[0] for row in c.execute("select request_id from sends where account=? and state='rejected' and result like ?",
+                                          (account,'%"compose_window_left_open"%'))]
     for earlier in pending:
         try:
             status(earlier,state,store)
+        except (MailError,OSError,sqlite3.Error):
+            pass
+    for earlier in left:
+        try:
+            close_left_window(state,earlier,store,here)
         except (MailError,OSError,sqlite3.Error):
             pass
 
@@ -448,14 +463,14 @@ def close_left_window(state, request_id, store, here=None):
     if not row or row["state"]!="rejected" or not result.get("compose_window_left_open"):
         return None
     from native_transport import close_stale_window
-    closed=close_stale_window(json.loads(row["verification"]), state, here or Path(__file__).resolve().parent, store)
+    verification=dict(json.loads(row["verification"]), compose_window=result.get("compose_window"))
+    closed=close_stale_window(verification, state, here or Path(__file__).resolve().parent, store)
     if closed is None:
         return None  # Mail still does not answer, so the note stays
-    result.pop("compose_window_left_open")
-    result.pop("compose_window_note", None)
+    for key in ("compose_window_left_open", "compose_window", "compose_window_note"):
+        result.pop(key, None)
     result["closed_stale_windows"]=closed
-    update(state,request_id,result)
-    return result
+    return result if update(state,request_id,result,row["result"]) else None
 
 
 def describe(row,state,store,result=None):
@@ -496,13 +511,14 @@ def status(request_id,state,store):
     if not row:
         raise MailError("Unknown send request ID")
     result=json.loads(row["result"])
+    stored=True
     if result["state"] not in {"accepted","rejected","legacy_reported_sent"}:
         verification=json.loads(row["verification"])
         verification.setdefault("created",row["created"])  # ledger rows from before 0.4.0
         evidence=observed_acceptance(store,verification)
         if evidence:
             result.update(state="accepted",**evidence)
-            update(state,request_id,result)
+            stored=update(state,request_id,result,row["result"])
         elif result["state"] == "submitting" and owner_alive(row):
             pass
         else:
@@ -516,7 +532,11 @@ def status(request_id,state,store):
                         result["closed_stale_windows"] = closed
             elif result["state"] == "submitting":
                 result.update(state="outcome_unknown", error="The submitting process exited; do not resend without reconciliation")
-            update(state,request_id,result)
+            stored=update(state,request_id,result,row["result"])
     elif result.get("compose_window_left_open"):
         result=close_left_window(state,request_id,store) or result
+    if not stored:  # another process changed this request while Mail was being asked, and its word stands
+        with ledger(state) as c:
+            row=c.execute("select * from sends where request_id=?",(request_id,)).fetchone()
+        result=json.loads(row["result"])
     return describe(row,state,store,result)
