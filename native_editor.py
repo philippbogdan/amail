@@ -1,9 +1,14 @@
 """Targeted macOS Accessibility access to amail's own Mail compose window."""
 import ctypes
+import re
 import subprocess
 import time
 from pathlib import Path
 from local_store import MailError
+
+
+EDITOR = ('AXWebArea',)  # the compose editor: one web area holding the new text and any quoted history
+OBJECT = '\ufffc'       # the editor's text holds this character for each attachment or inline image
 
 
 class Point(ctypes.Structure):
@@ -24,6 +29,8 @@ class Accessibility:
             (self.cf, 'CFStringGetTypeID', ctypes.c_ulong, []),
             (self.cf, 'CFArrayGetCount', integer, [ptr]),
             (self.cf, 'CFArrayGetValueAtIndex', ptr, [ptr, integer]),
+            (self.cf, 'CFArrayCreate', ptr, [ptr, ctypes.POINTER(ptr), integer, ptr]),
+            (self.cf, 'CFDictionaryCreate', ptr, [ptr, ctypes.POINTER(ptr), ctypes.POINTER(ptr), integer, ptr, ptr]),
             (self.cf, 'CFRelease', None, [ptr]),
             (self.cf, 'CFEqual', ctypes.c_bool, [ptr, ptr]),
             (self.ax, 'AXIsProcessTrusted', ctypes.c_bool, []),
@@ -83,13 +90,34 @@ class Accessibility:
     def children(self, element):
         return self.array(self.attr(element, 'AXChildren'))
 
-    def walk(self, root, maximum=500):
+    def constant(self, name):
+        return ctypes.addressof(ctypes.c_void_p.in_dll(self.cf, name))
+
+    def cf_array(self, items):
+        values = (ctypes.c_void_p * len(items))(*items)
+        return self.own(self.cf.CFArrayCreate(None, values, len(items), self.constant('kCFTypeArrayCallBacks')))
+
+    def cf_dictionary(self, mapping):
+        keys = (ctypes.c_void_p * len(mapping))(*[self.string(key) for key in mapping])
+        values = (ctypes.c_void_p * len(mapping))(*mapping.values())
+        return self.own(self.cf.CFDictionaryCreate(None, keys, values, len(mapping), self.constant('kCFTypeDictionaryKeyCallBacks'),
+                                                   self.constant('kCFTypeDictionaryValueCallBacks')))
+
+    def walk(self, root, maximum=500, prune=()):
+        """Elements under root, depth first, without entering an element whose role is in prune.
+
+        The editor's web area holds the whole quoted history of a reply: tens
+        of thousands of elements for an HTML newsletter. Every search here is
+        for the window's own controls, so each one prunes the web area.
+        """
         pending = [root]
         for _ in range(maximum):
             if not pending:
                 return
             element = pending.pop()
             yield element
+            if prune and self.text(self.attr(element, 'AXRole')) in prune:
+                continue
             pending.extend(reversed(self.children(element)))
         raise MailError('Mail compose accessibility tree exceeded its bound')
 
@@ -105,6 +133,13 @@ class Accessibility:
         self.pid = int(pids[0])
         return self.own(self.ax.AXUIElementCreateApplication(self.pid))
 
+    def frontmost(self, app, bring=False):
+        """Whether an application is in front. With bring, ask for it to be, best effort."""
+        true = ctypes.c_void_p.in_dll(self.cf, 'kCFBooleanTrue').value
+        if bring:
+            self.ax.AXUIElementSetAttributeValue(app, self.string('AXFrontmost'), true)
+        return self.attr(app, 'AXFrontmost') == true
+
     def window(self, app, title):
         matches = [window for window in self.array(self.attr(app, 'AXWindows'))
                    if self.text(self.attr(window, 'AXTitle')) == title]
@@ -116,8 +151,8 @@ class Accessibility:
         # A freshly launched Mail can show the window before its editor has loaded.
         deadline = time.monotonic() + wait
         while True:
-            matches = [element for element in self.walk(window)
-                       if self.text(self.attr(element, 'AXRole')) == 'AXWebArea']
+            matches = [element for element in self.walk(window, prune=EDITOR)
+                       if self.text(self.attr(element, 'AXRole')) in EDITOR]
             if len(matches) == 1:
                 return matches[0]
             if matches or time.monotonic() >= deadline:
@@ -133,13 +168,20 @@ class Accessibility:
         if self.ax.AXUIElementPerformAction(element, self.string(action)):
             raise MailError('Mail refused an editor action')
 
-    def assert_focus(self, app, window, body):
+    def lost_focus(self, app, window, body):
+        """Why the compose editor does not have the keyboard, or None when it does."""
         focused_window = self.attr(app, 'AXFocusedWindow')
         if not focused_window or not self.cf.CFEqual(focused_window, window):
-            raise MailError('Mail focus changed; no further editor action was attempted')
+            return 'Mail focus changed; no further editor action was attempted'
         focused = self.attr(app, 'AXFocusedUIElement')
         if not focused or not self.cf.CFEqual(focused, body):
-            raise MailError('Mail body focus changed; no further editor action was attempted')
+            return 'Mail body focus changed; no further editor action was attempted'
+        return None
+
+    def assert_focus(self, app, window, body):
+        reason = self.lost_focus(app, window, body)
+        if reason:
+            raise MailError(reason)
 
     def click_body(self, body):
         point = Point()
@@ -172,6 +214,26 @@ class Accessibility:
             element, self.string(name), value, ctypes.byref(result))
         return self.own(result.value) if error == 0 else None
 
+    def insert_at_start(self, body, text):
+        """Ask the editor to place text at the very start of its document. False when it cannot.
+
+        WebKit's accessibility text operation replaces a text range the way a
+        plain-text paste does, in whichever window holds the editor: Mail need
+        not be in front, nothing is typed and the clipboard is untouched.
+        """
+        start = self.attr(body, 'AXStartTextMarker')
+        span = self.parameter(body, 'AXTextMarkerRangeForUnorderedTextMarkers', self.cf_array([start, start])) if start else None
+        if not span:
+            return False
+        operation = self.cf_dictionary({'AXTextOperationType': self.string('TextOperationReplace'),
+                                        'AXTextOperationMarkerRanges': self.cf_array([span]),
+                                        'AXTextOperationReplacementString': self.string(text),
+                                        'AXTextOperationSmartReplace': ctypes.c_void_p.in_dll(self.cf, 'kCFBooleanFalse').value})
+        result = ctypes.c_void_p()
+        error = self.ax.AXUIElementCopyParameterizedAttributeValue(body, self.string('AXTextOperation'), operation, ctypes.byref(result))
+        self.own(result.value)
+        return error == 0
+
     def selected_text(self, body):
         selection = self.attr(body, 'AXSelectedTextMarkerRange')
         result = ctypes.c_void_p()
@@ -181,16 +243,21 @@ class Accessibility:
         return self.text(self.own(result.value))
 
 
-def ensure_subject_available(subject):
-    """Keep the real subject visible without risking another open draft."""
+def compose_window_open(subject):
+    """Whether Mail shows a window titled with exactly this subject."""
     ax = Accessibility()
     try:
         app = ax.mail(allow_absent=True)
-        if app and any(ax.text(ax.attr(window, 'AXTitle')) == subject
-                       for window in ax.array(ax.attr(app, 'AXWindows'))):
-            raise MailError('A Mail compose window with this subject is already open; close it before retrying')
+        return bool(app) and any(ax.text(ax.attr(window, 'AXTitle')) == subject
+                                 for window in ax.array(ax.attr(app, 'AXWindows')))
     finally:
         ax.close()
+
+
+def ensure_subject_available(subject):
+    """Keep the real subject visible without risking another open draft."""
+    if compose_window_open(subject):
+        raise MailError('A Mail compose window with this subject is already open; close it before retrying')
 
 
 class Pasteboard:
@@ -283,7 +350,7 @@ class SubmissionWatch:
             windows = self.ax.array(self.ax.attr(self.app, 'AXWindows'))
             if not any(self.ax.cf.CFEqual(window, self.window) for window in windows):
                 return handled
-            elements = list(self.ax.walk(self.window))
+            elements = list(self.ax.walk(self.window, prune=EDITOR))
             alerts = [element for element in elements if self.ax.text(self.ax.attr(element, 'AXIdentifier')) == 'Mail.omittedAttachmentAlert']
             if alerts and self.allow_without_attachment and not handled:
                 buttons = [element for element in self.ax.walk(alerts[0])
@@ -310,91 +377,155 @@ def squash(value):
     return ''.join(value.replace('\ufffc', '').split())
 
 
-ATTACHMENT_ROLES = {'AXAttachment', 'AXButton', 'AXImage'}  # Mail shows images inline.
+def layout(value):
+    """Editor text without whitespace, keeping the character that stands for each attachment."""
+    return ''.join(value.split())
 
 
-def attachment_names(ax, body):
-    """Labels of the attachment elements Mail exposes in the editor."""
-    names = []
-    for item in ax.walk(body):
-        if ax.text(ax.attr(item, 'AXRole')) in ATTACHMENT_ROLES:
-            names.append(' '.join(ax.text(ax.attr(item, name)) or '' for name in ('AXDescription', 'AXTitle', 'AXValue')))
-    return names
+def settled(ax, body, expected, seconds, check=None):
+    """Whether the editor's text reaches the expected text within the given time."""
+    deadline = time.monotonic() + seconds
+    while True:
+        if check:
+            check()
+        if squash(ax.body_text(body)) == expected:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(.05)
+
+
+def frontmost_pid():
+    """Process ID of the application in front, asked of Launch Services each time, or None.
+
+    A process without a run loop cannot ask AppKit: its answer never changes
+    after the first, and a batch worker lives for hours.
+    """
+    try:
+        front = subprocess.run(['lsappinfo', 'front'], capture_output=True, text=True, timeout=2).stdout.strip()
+        info = subprocess.run(['lsappinfo', 'info', '-only', 'pid', front], capture_output=True, text=True, timeout=2).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    found = re.search(r'pid"?\s*=\s*(\d+)', info)
+    return int(found.group(1)) if found else None
+
+
+class Foreground:
+    """Mail in front with the compose editor focused and the clipboard borrowed, for as long as a paste needs.
+
+    Closing it gives the clipboard back, and the keyboard back to the
+    application that had it, unless the user has moved on meanwhile.
+    """
+    def __init__(self, ax, app, window, body):
+        self.ax, self.app, self.window, self.body = ax, app, window, body
+        self.board = Pasteboard(ax)
+        self.written = None
+        self.displaced = frontmost_pid()
+        try:
+            original = self.board.count()
+            self.snapshot = self.board.snapshot()
+            ax.set_true(app, 'AXFrontmost')
+            ax.press(window, 'AXRaise')
+            # Mail coming forward from behind takes a moment to give its new
+            # window the keyboard, and a new message first focuses the To field.
+            deadline = time.monotonic() + 3
+            while True:
+                ax.set_true(body, 'AXFocused')
+                ax.click_body(body)
+                time.sleep(.05)
+                if not ax.lost_focus(app, window, body) or time.monotonic() >= deadline:
+                    break
+                time.sleep(.2)
+            self.check()
+            if self.board.count() != original:
+                raise MailError('Clipboard changed during preparation; no body edit was attempted')
+            self.key(126, command=True)  # Command-Up: the start of the document, above any quoted history.
+            time.sleep(.05)
+        except BaseException:
+            self.close()
+            raise
+
+    def check(self):
+        self.ax.assert_focus(self.app, self.window, self.body)
+
+    def key(self, code, command=False):
+        self.check()
+        self.ax.key(code, command)
+
+    def paste(self, items):
+        if self.written is not None and self.board.count() != self.written:
+            raise MailError('Clipboard changed before a paste, so nothing was sent')
+        self.written = self.board.write(items)
+        self.check()
+        if self.board.count() != self.written:
+            raise MailError('Clipboard changed before a paste, so nothing was sent')
+        self.ax.key(9, command=True)  # Command-V, restricted to the Mail process.
+
+    def close(self):
+        try:
+            # Do not overwrite a clipboard change made by the user meanwhile.
+            if self.written is not None and self.board.count() == self.written:
+                self.board.write(self.snapshot)
+            if self.displaced and self.displaced != self.ax.pid and self.ax.frontmost(self.app):
+                self.ax.frontmost(self.ax.own(self.ax.ax.AXUIElementCreateApplication(self.displaced)), bring=True)
+        finally:
+            self.board.close()
 
 
 def enter_body(title, text, attachments=()):
-    """Insert the reviewed text at the top of a uniquely identified compose window.
+    """Insert the reviewed text at the top of a uniquely identified compose window and return how it was entered.
 
     Whatever Mail already placed in the editor stays below the new text: the
     quoted history and attribution line of a native reply or forward, and any
     configured signature. Attachments follow the new text.
+
+    Text goes in through the editor's accessibility text operation, so Mail
+    stays in the background and the clipboard is untouched. Attachments are
+    pasted, which takes Mail to the front and borrows the clipboard for a
+    moment, and so does the text when the editor refuses the operation.
     """
     text = text.rstrip('\n')
     ax = Accessibility()
-    board = None
+    front = None
     try:
         app = ax.mail()
         window = ax.window(app, title)
         body = ax.body(window)
-        board = Pasteboard(ax)
-        original_count = board.count()
-        snapshot = board.snapshot()
-        ax.set_true(app, 'AXFrontmost')
-        ax.press(window, 'AXRaise')
-        ax.set_true(body, 'AXFocused')
-        ax.click_body(body)
-        time.sleep(.05)
-        ax.assert_focus(app, window, body)
-        if board.count() != original_count:
-            raise MailError('Clipboard changed during preparation; no body edit was attempted')
-        written = board.write([[('public.utf8-plain-text', text.encode())]])
-        try:
-            ax.assert_focus(app, window, body)
-            previous = squash(ax.body_text(body))
-            existing_attachments = len(attachment_names(ax, body))
-            ax.key(126, command=True)  # Command-Up: the start of the document, above any quoted history.
-            time.sleep(.05)
-            ax.assert_focus(app, window, body)
-            if board.count() != written:
-                raise MailError('Clipboard changed before body entry; nothing was pasted')
-            if text:
-                ax.key(9, command=True)  # Command-V, restricted to the Mail process.
-            expected = squash(text) + previous
-            deadline = time.monotonic() + 3
-            while True:
-                ax.assert_focus(app, window, body)
-                if squash(ax.body_text(body)) == expected:
+        previous = squash(ax.body_text(body))
+        expected = squash(text) + previous
+        failed = MailError('Mail did not place the text at the top of the body; the message was not sent')
+        entry = None
+        if attachments:
+            front = Foreground(ax, app, window, body)
+        if text:
+            if ax.insert_at_start(body, text):
+                if not settled(ax, body, expected, 3):
+                    raise failed
+                entry = 'text_operation'
+            elif squash(ax.body_text(body)) != previous:
+                raise failed
+            else:
+                front = front or Foreground(ax, app, window, body)
+                front.paste([[('public.utf8-plain-text', text.encode())]])
+                if not settled(ax, body, expected, 3, front.check):
+                    raise failed
+                entry = 'clipboard'
+        if attachments:
+            front.key(36)  # Return: a new paragraph after the entered text, before any history.
+            time.sleep(.1)
+            front.paste([[('public.file-url', Path(path).as_uri().encode())] for path in attachments])
+            # Wait for Mail to show the files. The saved draft's MIME parts are
+            # the actual gate, so a file Mail shows some other way is not a failure here.
+            shown = layout(text) + OBJECT * len(attachments)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                front.check()
+                if layout(ax.body_text(body)).startswith(shown):
                     break
-                if time.monotonic() >= deadline:
-                    raise MailError('Mail did not place the text at the top of the body; the message was not sent')
-                time.sleep(.05)
-            if attachments:
-                ax.assert_focus(app, window, body)
-                ax.key(36)  # Return: a new paragraph after the entered text, before any history.
                 time.sleep(.1)
-                if board.count() != written:
-                    raise MailError('Clipboard changed before attachment entry; nothing was sent')
-                written = board.write([[('public.file-url', Path(path).as_uri().encode())] for path in attachments])
-                ax.assert_focus(app, window, body)
-                if board.count() != written:
-                    raise MailError('Clipboard changed before attachment paste; nothing was sent')
-                ax.key(9, command=True)
-                # Wait for Mail to show the files; the saved draft's MIME parts are
-                # the actual gate, so an unlabelled inline image is not a failure here.
-                deadline = time.monotonic() + 5
-                while time.monotonic() < deadline:
-                    ax.assert_focus(app, window, body)
-                    descriptions = attachment_names(ax, body)
-                    if (len(descriptions) >= existing_attachments + len(attachments)
-                            and all(any(Path(path).name in desc for desc in descriptions) for path in attachments)):
-                        break
-                    time.sleep(.1)
-                ax.assert_focus(app, window, body)
-        finally:
-            # Do not overwrite a clipboard change made by the user meanwhile.
-            if board.count() == written:
-                board.write(snapshot)
+            front.check()
+        return entry
     finally:
-        if board:
-            board.close()
+        if front:
+            front.close()
         ax.close()
