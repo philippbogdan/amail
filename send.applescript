@@ -59,9 +59,16 @@ on run argv
                 -- open. Called only after that request was proven unsent.
                 set closed to 0
                 -- Iterate by id: Mail cannot index "every outgoing message" directly.
+                -- The window is amail's own only with the same subject and sender and,
+                -- when the request recorded it, the same id in this Mail process.
+                set ownID to q's objectForKey:"outgoing_id"
                 repeat with candidateID in (get id of every outgoing message)
                     set candidate to outgoing message id (candidateID as integer)
-                    if (subject of candidate) is subjectText then
+                    set candidateSender to sender of candidate
+                    set sameSender to (candidateSender is senderAddress or candidateSender contains ("<" & senderAddress & ">"))
+                    set sameWindow to (ownID is missing value)
+                    if not sameWindow then set sameWindow to ((candidateID as integer) is (ownID as integer))
+                    if (subject of candidate) is subjectText and sameSender and sameWindow then
                         delete candidate
                         set closed to closed + 1
                     end if
@@ -69,6 +76,24 @@ on run argv
                 return "{\"stage\":\"closed_stale\",\"closed\":" & closed & "}"
             end if
             set theStage to operation
+            if operation is "sweep" then
+                -- Runs after the compose window has gone, so it must not look the window up.
+                set sweptIDs to {}
+                repeat with candidateID in ((q's objectForKey:"sweep_ids") as list)
+                    try
+                        set candidate to first message of drafts mailbox whose id is (candidateID as integer)
+                        if (id of account of mailbox of candidate) is accountID then
+                            delete candidate
+                            set end of sweptIDs to (candidateID as integer)
+                        end if
+                    end try
+                end repeat
+                set previousDelimiters to AppleScript's text item delimiters
+                set AppleScript's text item delimiters to ","
+                set sweptText to sweptIDs as text
+                set AppleScript's text item delimiters to previousDelimiters
+                return "{\"stage\":\"swept\",\"swept_drafts\":" & (count sweptIDs) & ",\"swept_ids\":[" & sweptText & "]}"
+            end if
             set outgoing to outgoing message id ((q's objectForKey:"outgoing_id") as integer)
             if operation is "discard" then
                 -- Close amail's own compose window without saving. Mail's autosaved
@@ -76,19 +101,6 @@ on run argv
                 -- because deleting an unsynced draft leaves a move Mail can never finish.
                 delete outgoing
                 return "{\"stage\":\"discarded\"}"
-            end if
-            if operation is "sweep" then
-                set swept to 0
-                repeat with candidateID in ((q's objectForKey:"sweep_ids") as list)
-                    try
-                        set candidate to first message of drafts mailbox whose id is (candidateID as integer)
-                        if (id of account of mailbox of candidate) is accountID then
-                            delete candidate
-                            set swept to swept + 1
-                        end if
-                    end try
-                end repeat
-                return "{\"stage\":\"swept\",\"swept_drafts\":" & swept & "}"
             end if
             if operation is "prepare" then
                 set theStage to "prepare-recipients"

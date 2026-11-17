@@ -5,10 +5,12 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import sqlite3
 import time
 import uuid
 from gmail_backend import secure_json
 from local_store import MailError
+from configuration import SEND_TIMEOUT
 from mail_sender import address, ledger, prepare, send
 from policy import WaitRequired, SuppressedRecipient, profile, eligibility
 
@@ -91,7 +93,7 @@ def normalise(item, base, state, store, *, require_id=False):
     return message
 
 
-def arguments(message, *, request_id, dry_run=False, purpose="personal", timeout=30):
+def arguments(message, *, request_id, dry_run=False, purpose="personal", timeout=SEND_TIMEOUT):
     for attachment in message["attachments"]:
         if hashlib.sha256(Path(attachment["path"]).read_bytes()).hexdigest() != attachment["sha256"]:
             raise MailError("An approved attachment changed; create a new plan or draft revision")
@@ -238,7 +240,7 @@ def batch_control(state, batch_id, action):
     return batch_show(state, batch_id, include_messages=False)
 
 
-def batch_run(store, state, here, batch_id, *, resume=False, sender=send, clock=time.time, sleeper=time.sleep):
+def batch_run(store, state, here, batch_id, *, resume=False, timeout=SEND_TIMEOUT, sender=send, clock=time.time, sleeper=time.sleep):
     plan = batch_show(state, batch_id)
     if plan["state"] in {"completed", "cancelled"}:
         return plan
@@ -276,7 +278,7 @@ def batch_run(store, state, here, batch_id, *, resume=False, sender=send, clock=
                 from feedback import scan
                 scan(store,state)
                 message=messages[item["item"]]
-                args=arguments(message,request_id=item["request_id"],purpose="outreach")
+                args=arguments(message,request_id=item["request_id"],purpose="outreach",timeout=timeout)
                 args.logical_item=message["id"]
                 args.retry_rejected=resume
                 try:
@@ -301,7 +303,38 @@ def batch_run(store, state, here, batch_id, *, resume=False, sender=send, clock=
         except KeyboardInterrupt:
             batch_control(state, batch_id, "pause")
             raise
+        finally:
+            clear_finished_locks(state, batch_id)
     return batch_show(state, batch_id, include_messages=False)
+
+
+def clear_finished_locks(state, held):
+    """Remove the worker lock of every completed or cancelled batch that no worker holds, and the caller's own.
+
+    A cancelled batch can still have a worker finishing its current message,
+    so a lock is removed only after taking it. The caller holds the lock of
+    the batch named held and removes it without asking.
+    """
+    try:
+        with ledger(state) as c:
+            finished = [row[0] for row in c.execute("select id from batches where state in ('completed','cancelled')")]
+        for batch_id in finished:
+            path = state / (batch_id + ".lock")
+            if batch_id == held:
+                path.unlink(missing_ok=True)
+                continue
+            try:
+                fd = os.open(path, os.O_RDWR)
+            except FileNotFoundError:
+                continue
+            with os.fdopen(fd, "w") as lock:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    continue
+                path.unlink(missing_ok=True)
+    except (sqlite3.Error, OSError):
+        pass  # housekeeping only, the next worker tries again
 
 
 def input_schema(kind):

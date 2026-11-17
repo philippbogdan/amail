@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from gmail_backend import ProviderError
-from native_transport import submit, script
+from native_transport import submit, script, discard, close_stale_window
 
 
 class NativeTransportTests(unittest.TestCase):
@@ -115,3 +115,84 @@ class NativeTransportTests(unittest.TestCase):
                 results = list(pool.map(lambda i: submit(None, dict(self.request, account_id=str(i)), {}, self.state, self.state, 3), range(4)))
         self.assertTrue(all(result['mail_send_result'] for result in results))
         self.assertEqual(maximum, 1)
+
+    def test_scratch_left_by_a_dead_process_is_removed_before_the_next_composition(self):
+        stale = self.state / 'compose-dead'
+        stale.mkdir()
+        (stale / 'request.json').write_text('{"body": "an old message"}')
+        with patch('native_transport.prepare_native', return_value=self.draft), patch('native_transport.script', return_value={'mail_send_result': True}):
+            submit(None, self.request, {}, self.state, self.state, 2)
+        self.assertEqual(list(self.state.glob('compose-*')), [])
+
+    def test_a_window_mail_would_not_close_is_recorded_on_the_request(self):
+        for still_open in (True, False):
+            with self.subTest(still_open=still_open):
+                request = dict(self.request, compose_title='Test')
+                with patch('native_transport.script', side_effect=subprocess.TimeoutExpired('osascript', 15)), \
+                        patch('native_editor.compose_window_open', return_value=still_open), \
+                        patch('native_transport.sweep_synced_drafts') as sweep:
+                    discard(None, request, set(), self.state, self.state / 'request.json')
+                self.assertEqual(request.get('compose_window_left_open', False), still_open)
+                sweep.assert_not_called()
+
+    def test_result_reports_how_the_body_was_entered_and_where_the_time_went(self):
+        def prepare(store, request, *rest):
+            request.update(body_entry='text_operation', timings_ms={'compose': 600})
+            return self.draft
+        with patch('native_transport.prepare_native', side_effect=prepare), patch('native_transport.script', return_value={'mail_send_result': True}):
+            result = submit(None, self.request, {}, self.state, self.state, 2)
+        self.assertEqual(result['body_entry'], 'text_operation')
+        self.assertIn('submit', self.request['timings_ms'])
+
+    def test_a_window_prepared_but_never_submitted_is_closed(self):
+        operations = []
+        def run(request, operation, *rest):
+            operations.append(operation)
+            if operation == 'submit':
+                raise ProviderError('Deadline elapsed before the next native operation; no submission was attempted')
+            return {'stage': 'discarded'}
+        with patch('native_transport.prepare_native', return_value=self.draft), patch('native_transport.script', side_effect=run), \
+                patch('native_transport.sweep_synced_drafts') as sweep:
+            with self.assertRaises(ProviderError) as raised:
+                submit(None, self.request, {}, self.state, self.state, 2)
+        self.assertFalse(raised.exception.uncertain)
+        self.assertEqual(operations, ['submit', 'discard'])
+        sweep.assert_called_once()
+
+    def test_a_window_that_may_have_been_submitted_is_left_alone(self):
+        operations = []
+        def run(request, operation, *rest):
+            operations.append(operation)
+            raise ProviderError('Mail refused send (error -1712)', uncertain=True)
+        with patch('native_transport.prepare_native', return_value=self.draft), patch('native_transport.script', side_effect=run):
+            with self.assertRaises(ProviderError) as raised:
+                submit(None, self.request, {}, self.state, self.state, 2)
+        self.assertTrue(raised.exception.uncertain)
+        self.assertEqual(operations, ['submit'])
+
+    def test_a_mail_too_slow_to_show_its_window_was_never_asked_to_send(self):
+        from local_store import MailError
+        with patch('native_editor.SubmissionWatch', side_effect=MailError('The amail compose window is missing or ambiguous')), \
+                patch('native_transport.subprocess.run') as process:
+            with self.assertRaises(ProviderError) as raised:
+                script(self.request, 'submit', self.state, self.state / 'request.json', time.monotonic() + 5)
+        self.assertFalse(raised.exception.uncertain)
+        process.assert_not_called()
+
+    def test_only_the_window_the_request_opened_is_closed(self):
+        verification = {'sender': 'owner@example.com', 'account': 'ACCOUNT', 'subject': 'Re: Dinner',
+                        'compose_window': {'outgoing_id': 7, 'mail_process': '10 fixture'}}
+        with patch('native_transport.mail_process', return_value='10 fixture'), \
+                patch('native_transport.script', return_value={'stage': 'closed_stale', 'closed': 1}) as run:
+            self.assertEqual(close_stale_window(verification, self.state, self.state), 1)
+        self.assertEqual(run.call_args[0][0]['outgoing_id'], 7)
+        # After a Mail restart the id names nothing, and a window with that subject could be the user's own.
+        with patch('native_transport.mail_process', return_value='11 restarted'), patch('native_transport.script') as run:
+            self.assertEqual(close_stale_window(verification, self.state, self.state), 0)
+        run.assert_not_called()
+
+    def test_a_failed_sweep_never_replaces_the_error_that_led_to_the_discard(self):
+        from local_store import MailError
+        with patch('native_transport.script', return_value={'stage': 'discarded'}), \
+                patch('native_transport.sweep_synced_drafts', side_effect=MailError('Mail cache is busy')):
+            discard(None, dict(self.request, compose_title='Test'), set(), self.state, self.state / 'request.json')

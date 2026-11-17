@@ -9,18 +9,50 @@ import sqlite3
 import subprocess
 import sys
 import time
+from configuration import SEND_TIMEOUT, SEND_TIMEOUT_MAX
 from local_store import Store, MailError, message_text, attachment_parts, body_available
 
 HERE = Path(__file__).resolve().parent
 
 
+class Parser(argparse.ArgumentParser):
+    """Usage errors as one JSON line on stderr, like every other amail error, with where to look next."""
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("allow_abbrev", False)  # `--since` must never quietly mean `--since-hours`
+        super().__init__(*args, **kwargs)
+
+    def error(self, message):
+        print(json.dumps({"error": message, "help": self.prog + " -h"}, ensure_ascii=False), file=sys.stderr)
+        raise SystemExit(2)
+
+
+def unknown_options(root, argv, extra):
+    """Name the command that was given an option it does not take, and its closest real options."""
+    import difflib
+    current = root
+    for word in argv:
+        nested = next((a for a in current._actions if isinstance(a, argparse._SubParsersAction)), None)
+        if nested and word in nested.choices:
+            current = nested.choices[word]
+    known = sorted({name for action in current._actions for name in action.option_strings if name.startswith("--")})
+    message = "Unrecognised arguments for " + current.prog + ": " + " ".join(extra)
+    for word in extra:
+        close = difflib.get_close_matches(word.split("=")[0], known, n=2, cutoff=.6) if word.startswith("-") else []
+        if close:
+            message += ". Did you mean " + " or ".join(close) + "?"
+            break
+    return {"error": message, "help": current.prog + " -h"}
+
+
 def parser():
+    timeout_help = "Seconds allowed for the whole send, at most %d. A send that runs out before submission is rejected and safe to retry" % SEND_TIMEOUT_MAX
     common = argparse.ArgumentParser(add_help=False)
     style = common.add_mutually_exclusive_group()
     for flag in ("json", "plain", "tsv"):
         style.add_argument("--" + flag, action="store_true", default=argparse.SUPPRESS)
-    p = argparse.ArgumentParser(prog="amail", description="Fast email reads and verified, paced sending.", parents=[common], allow_abbrev=False)
-    p.add_argument("--version", action="version", version="amail 0.4.4")
+    suggest = {"suggest_on_error": True} if sys.version_info >= (3, 14) else {}  # a mistyped command names its neighbour
+    p = Parser(prog="amail", description="Fast email reads and verified, paced sending.", parents=[common], allow_abbrev=False, **suggest)
+    p.add_argument("--version", action="version", version="amail 0.5.0")
     sub = p.add_subparsers(dest="command", required=True)
     descriptions = {
         "accounts": "List enabled accounts; --available discovers accounts without enabling them",
@@ -60,7 +92,7 @@ def parser():
         kwargs.setdefault("help", descriptions.get(name))
         kwargs.setdefault("description", descriptions.get(name))
         kwargs.setdefault("allow_abbrev", False)
-        result = sub.add_parser(name, parents=[common], formatter_class=argparse.ArgumentDefaultsHelpFormatter, **kwargs)
+        result = sub.add_parser(name, parents=[common], formatter_class=argparse.ArgumentDefaultsHelpFormatter, **suggest, **kwargs)
         if name in {"list", "search", "read", "thread"}:
             result.add_argument("--fields", help="Comma-separated message fields; list/search retain scope metadata")
         return result
@@ -113,7 +145,7 @@ def parser():
     body = send.add_mutually_exclusive_group(); body.add_argument("--body"); body.add_argument("--body-file")
     send.add_argument("--attach", nargs="*", default=[]); send.add_argument("--name", default=None)
     send.add_argument("--dry-run", action="store_true"); send.add_argument("--request-id")
-    send.add_argument("--timeout", type=float, default=30)
+    send.add_argument("--timeout", type=float, default=SEND_TIMEOUT, help=timeout_help)
     send.add_argument("--cap", type=int, help="Optional stricter rolling recipient cap")
     send.add_argument("--purpose", choices=["personal", "outreach"], default="personal")
     send.add_argument("--retry-rejected", action="store_true", help="Explicitly retry a definitively rejected request; never an ambiguous one")
@@ -132,6 +164,7 @@ def parser():
         q = command(name); q.add_argument("ref"); q.add_argument("--from", dest="sender")
         body = q.add_mutually_exclusive_group(); body.add_argument("--body"); body.add_argument("--body-file")
         q.add_argument("--send", action="store_true")
+        q.add_argument("--timeout", type=float, default=SEND_TIMEOUT, help=timeout_help + " (with --send)")
         if name == "reply": q.add_argument("--all", action="store_true")
         else: q.add_argument("--to", nargs="+", required=True)
     draft = command("draft"); ds = draft.add_subparsers(dest="action", required=True)
@@ -142,6 +175,7 @@ def parser():
         if name == "send":
             q.add_argument("--dry-run", action="store_true")
             q.add_argument("--retry-rejected", action="store_true", help="Retry this unchanged draft only after a confirmed rejection; never resend an unknown outcome")
+            q.add_argument("--timeout", type=float, default=SEND_TIMEOUT, help=timeout_help)
     batch = command("batch"); bs = batch.add_subparsers(dest="action", required=True)
     for name in ("plan", "show", "run", "status", "pause", "resume", "cancel", "export"):
         description = {"plan": "Freeze a JSONL manifest without sending; use amail schema batch for the complete input contract",
@@ -157,6 +191,7 @@ def parser():
             q.add_argument("file", help="JSONL: one complete message per line with a stable id. Run amail schema batch for fields and an example."); q.add_argument("--policy", choices=["outreach"], default="outreach")
         else: q.add_argument("id")
         if name == "status": q.add_argument("--details", action="store_true", help="Include every item and its provider result")
+        if name in {"run", "resume"}: q.add_argument("--timeout", type=float, default=SEND_TIMEOUT, help=timeout_help.replace("the whole send", "each message"))
         if name == "export": q.add_argument("--out", required=True)
     policy = command("policy"); ps = policy.add_subparsers(dest="action", required=True)
     q = ps.add_parser("show", parents=[common]); q.add_argument("name", nargs="?", default="outreach", choices=["outreach", "gmail", "exchange", "imperial"])
@@ -199,7 +234,7 @@ def conversation_draft(args, store, state, here):
         message = {"from": sender, "to": args.to, "subject": subject, "body": intro, "forward_ref": args.ref}
     draft = draft_create(store, state, message, Path.cwd())
     if args.send:
-        return send(store, arguments(draft["message"], request_id=draft["id"] + "-1"), state, here)
+        return send(store, arguments(draft["message"], request_id=draft["id"] + "-1", timeout=args.timeout), state, here)
     return draft
 
 
@@ -313,7 +348,7 @@ def run(args, store, state, here=HERE):
                 initialise(c)
                 return [dict(r) for r in c.execute("select id,revision,created from drafts order by created desc")]
         draft = draft_get(state, args.id)
-        send_args = arguments(draft["message"], request_id=f'{args.id}-{draft["revision"]}', dry_run=args.dry_run)
+        send_args = arguments(draft["message"], request_id=f'{args.id}-{draft["revision"]}', dry_run=args.dry_run, timeout=args.timeout)
         send_args.retry_rejected = args.retry_rejected
         return send(store, send_args, state, here)
     if command == "batch":
@@ -323,7 +358,7 @@ def run(args, store, state, here=HERE):
             from workflows import batch_summary
             return batch_summary(state, args.id)
         if args.action in {"show", "status"}: return batch_show(state, args.id, include_messages=args.action == "show")
-        if args.action in {"run", "resume"}: return batch_run(store, state, here, args.id, resume=args.action == "resume")
+        if args.action in {"run", "resume"}: return batch_run(store, state, here, args.id, resume=args.action == "resume", timeout=args.timeout)
         if args.action in {"pause", "cancel"}: return batch_control(state, args.id, args.action)
         plan = batch_show(state, args.id)
         with open(args.out, "x") as f: json.dump(plan, f, indent=2, ensure_ascii=False)
@@ -440,7 +475,11 @@ def output(value, args):
 
 
 def main():
-    args = parser().parse_args()
+    root = parser()
+    args, extra = root.parse_known_args()
+    if extra:
+        print(json.dumps(unknown_options(root, sys.argv[1:], extra), ensure_ascii=False), file=sys.stderr)
+        raise SystemExit(2)
     from configuration import state_path, config_path, load, apply, setup
     state = state_path()
     try:

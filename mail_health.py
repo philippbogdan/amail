@@ -35,6 +35,12 @@ def mail_pid():
     return int(pids[0]) if len(pids) == 1 else None
 
 
+def mail_process():
+    """Which Mail is running, as text. A compose window's id means nothing to any other Mail."""
+    pid = mail_pid()
+    return f'{pid} {process_start(pid)}' if pid else None
+
+
 def suspended(pid):
     """Whether the kernel holds Mail's task suspended, as the low-swap handler does."""
     try:

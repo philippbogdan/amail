@@ -10,6 +10,8 @@ import tempfile
 from local_store import MailError, Store
 
 SUPPORTED = {'com.apple.account.Google', 'com.apple.account.Exchange'}
+SEND_TIMEOUT = 60       # seconds allowed for one send: an idle Mac takes 3 to 15, a loaded one far longer
+SEND_TIMEOUT_MAX = 300
 
 
 def state_path():

@@ -72,7 +72,9 @@ class UsabilityTests(unittest.TestCase):
         self.assertNotIn('connection_error', result[0])
 
     def test_unknown_flags_are_not_prefix_matched(self):
-        with self.assertRaises(SystemExit):
+        import contextlib
+        import io
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parser().parse_args(['search', '--since', '2026-09-18'])
         args = parser().parse_args(['sent', '--after', '2026-09-18', '--before', '2026-09-19', '--limit', '5'])
         self.assertEqual(args.limit, 5)
@@ -200,6 +202,39 @@ assert.deepEqual(marks,[1]);
         with patch('sys.argv', argv), patch('configuration.load', side_effect=AssertionError('must reject before account access')), contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit) as result: main()
         self.assertEqual(result.exception.code, 2)
+
+    def test_an_unknown_option_names_its_command_and_the_nearest_real_option(self):
+        import contextlib
+        import io
+        from cli import main
+        for argv, command, meant in [(['list', '--acount', 'x'], 'amail list', '--account'),
+                                     (['draft', 'send', 'ID', '--retry-reject'], 'amail draft send', '--retry-rejected')]:
+            with self.subTest(command=command):
+                stderr = io.StringIO()
+                with patch('sys.argv', ['amail'] + argv), patch('configuration.load', side_effect=AssertionError('must reject before account access')), \
+                        contextlib.redirect_stderr(stderr):
+                    with self.assertRaises(SystemExit) as result: main()
+                error = json.loads(stderr.getvalue())
+                self.assertEqual(result.exception.code, 2)
+                self.assertIn(command + ':', error['error'])
+                self.assertIn('Did you mean ' + meant, error['error'])
+                self.assertEqual(error['help'], command + ' -h')
+
+    def test_a_usage_error_is_one_json_line_naming_the_command(self):
+        import contextlib
+        import io
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as result:
+            parser().parse_args(['move', 'mail:GMAIL:1:abc'])
+        self.assertEqual(result.exception.code, 2)
+        self.assertEqual(json.loads(stderr.getvalue())['help'], 'amail move -h')
+
+    def test_every_sending_command_takes_a_timeout(self):
+        for argv in (['send', '--from', 'owner@example.com', '--to', 'person@example.net', '--subject', 'Hi'], ['draft', 'send', 'ID'],
+                     ['reply', 'REF', '--send'], ['forward', 'REF', '--to', 'person@example.net', '--send'], ['batch', 'run', 'ID'], ['batch', 'resume', 'ID']):
+            with self.subTest(command=argv[:2]):
+                self.assertEqual(parser().parse_args(argv).timeout, 60)
+                self.assertEqual(parser().parse_args(argv + ['--timeout', '240']).timeout, 240)
 
     def test_tsv_preserves_rows_and_scope_separately(self):
         import contextlib

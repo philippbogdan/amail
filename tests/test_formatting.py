@@ -145,9 +145,61 @@ class FormattingTests(unittest.TestCase):
         with contextlib.closing(sqlite3.connect(self.db)) as c, c:
             c.execute("update messages set remote_id=555 where ROWID=123")
         with patch('native_transport.script', side_effect=lambda req, op, *a: calls.append((op, req.get('sweep_ids'))) or {'stage': 'swept'}):
-            self.assertEqual(sweep_synced_drafts(store, request, set(), self.base, self.base / 'r.json', wait=5), 1)
+            self.assertEqual(sweep_synced_drafts(store, request, set(), self.base, self.base / 'r.json', wait=5, quiet=.5), 1)
         self.assertEqual(calls, [('sweep', [123])])
         self.assertEqual(sweep_synced_drafts(store, request, {123}, self.base, self.base / 'r.json', wait=1.5), 0)  # pre-existing drafts are untouched
+
+    def sweep_fixture(self, rows):
+        """A store whose Drafts hold these (row id, server id) pairs, changed by the test as Mail would."""
+        from unittest.mock import MagicMock
+        store = MagicMock()
+        store.query.side_effect = lambda **kw: [{'id': row, 'remote_id': remote, 'subject': 'Test'} for row, remote in rows]
+        store.pending_actions.return_value = 0
+        return store
+
+    def test_sweep_catches_a_save_mail_writes_after_the_window_closed(self):
+        from native_transport import sweep_synced_drafts
+        rows, calls = [(1, 'server-1')], []
+        def mail(request, operation, *rest):
+            calls.append(request['sweep_ids'])
+            rows[:] = [(2, 'server-2')] if request['sweep_ids'] == [1] else []  # the late save shows once the first is gone
+            return {'stage': 'swept', 'swept_ids': request['sweep_ids']}
+        with patch('native_transport.script', side_effect=mail):
+            count = sweep_synced_drafts(self.sweep_fixture(rows), {'subject': 'Test', 'account_id': 'GMAIL'}, set(), self.base, self.base / 'r.json',
+                                        wait=5, quiet=.3, stable=.1)
+        self.assertEqual((count, calls), (2, [[1], [2]]))
+
+    def test_sweep_never_deletes_the_same_server_copy_twice(self):
+        from native_transport import sweep_synced_drafts
+        rows, calls = [(1, 'server-1')], []
+        def mail(request, operation, *rest):
+            calls.append(request['sweep_ids'])
+            rows[:] = [(9, 'server-1')]  # a sync re-adds the copy whose server delete is still on its way
+            return {'stage': 'swept', 'swept_ids': request['sweep_ids']}
+        with patch('native_transport.script', side_effect=mail):
+            count = sweep_synced_drafts(self.sweep_fixture(rows), {'subject': 'Test', 'account_id': 'GMAIL'}, set(), self.base, self.base / 'r.json',
+                                        wait=1.5, quiet=.3, stable=.1)
+        self.assertEqual((count, calls), (1, [[1]]))
+
+    def test_sweep_waits_while_mail_has_a_drafts_action_queued_and_retries_what_mail_did_not_delete(self):
+        from native_transport import sweep_synced_drafts
+        rows, calls = [(1, 'server-1')], []
+        store = self.sweep_fixture(rows)
+        store.pending_actions.return_value = 1
+        with patch('native_transport.script', side_effect=AssertionError('deleted while a Drafts action was queued')):
+            self.assertEqual(sweep_synced_drafts(store, {'subject': 'Test', 'account_id': 'GMAIL'}, set(), self.base, self.base / 'r.json',
+                                                 wait=.8, quiet=.3, stable=.1), 0)
+        store.pending_actions.return_value = 0
+        def mail(request, operation, *rest):
+            calls.append(request['sweep_ids'])
+            if len(calls) == 1:
+                return {'stage': 'swept', 'swept_ids': []}  # Mail could not find it yet
+            rows[:] = []
+            return {'stage': 'swept', 'swept_ids': [1]}
+        with patch('native_transport.script', side_effect=mail):
+            count = sweep_synced_drafts(store, {'subject': 'Test', 'account_id': 'GMAIL'}, set(), self.base, self.base / 'r.json',
+                                        wait=5, quiet=.3, stable=.1)
+        self.assertEqual((count, calls), (1, [[1], [1]]))
 
     def test_editor_change_while_drafts_settle_stops_the_send(self):
         from native_transport import prepare_native

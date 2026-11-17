@@ -1,6 +1,6 @@
 # amail
 
-**A fast, local email CLI for agents on a Mac.** Read mail from Apple Mail's local cache, send and reply through the accounts already signed into Apple Mail, and return structured JSON. Reads stay in the background. Sends briefly use a dedicated Mail compose window: Mail itself composes replies and forwards, so quoted history, attribution lines, forwarded attachments and thread headers are Mail's own.
+**A fast, local email CLI for agents on a Mac.** Read mail from Apple Mail's local cache, send and reply through the accounts already signed into Apple Mail, and return structured JSON. Reads stay in the background, and so does a send without attachments: Mail opens its own compose window behind whatever you are doing, and amail fills it without taking the keyboard or the clipboard. Mail itself composes replies and forwards, so quoted history, attribution lines, forwarded attachments and thread headers are Mail's own.
 
 amail is for **macOS users who already have Gmail or Microsoft 365 / Exchange connected to Apple Mail**, and want a coding agent or terminal script to work with those accounts. It is particularly useful when a work or university mailbox is authorised in Apple Mail but a separate API integration is unavailable. It uses that existing permission; it does not bypass an organisation's access controls.
 
@@ -95,7 +95,8 @@ After reviewing the exact draft and obtaining approval, submit using a stable `-
           Fast reads         Sends and changes
              |                   |
       Read-only SQLite      Mail's own compose window
-      and MIME files        (reply / forward / new)
+      and MIME files        (reply / forward / new),
+                            filled in the background
              |                   |
       Apple Mail cache      Signed-in Gmail and Exchange
                             accounts, Mail's sessions
@@ -105,7 +106,7 @@ Local reads do not mark messages read. The reader understands Gmail label member
 
 Acceptance is corroborated against the Sent copy Mail files after the account's server takes the message (with nothing left in an Outbox), synchronised server metadata when already available, or a received copy in another configured account. A successful script call alone is insufficient. Reconciliation of an unverified send uses the request time, not a fixed window, so `amail status REQUEST_ID` can settle it hours later. Results distinguish `accepted`, `rejected`, `provider_acceptance_unverified` and `outcome_unknown`; ambiguous submissions are never retried automatically.
 
-On the development Mac, small cached reads were typically under 100 ms, and final small-send checks took about 1.0 to 1.5 seconds, including acceptance observation. These are measurements from a small sample, not latency guarantees. Exchange's Mail Undo Send delay must be set to Off for immediate submission; amail reports the setting but does not change it. [Validation and limitations](docs/VALIDATION.md)
+On the development Mac, small cached reads were typically under 100 ms. A send took 4 to 10 seconds including acceptance observation, most of it waiting for the account's server to know the saved draft before Mail may submit it, and every result carries `timings_ms` with the stages. A message with attachments brings Mail to the front for under a second while they are pasted, then hands the keyboard back. These are measurements from a small sample, not latency guarantees. Exchange's Mail Undo Send delay must be set to Off for immediate submission; amail reports the setting but does not change it. [Validation and limitations](docs/VALIDATION.md)
 
 ## Credentials, privacy and sending limits
 
