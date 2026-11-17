@@ -15,13 +15,43 @@ from local_store import Store, MailError, message_text, attachment_parts, body_a
 HERE = Path(__file__).resolve().parent
 
 
+class Parser(argparse.ArgumentParser):
+    """Usage errors as one JSON line on stderr, like every other amail error, with where to look next."""
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("allow_abbrev", False)  # `--since` must never quietly mean `--since-hours`
+        super().__init__(*args, **kwargs)
+
+    def error(self, message):
+        print(json.dumps({"error": message, "help": self.prog + " -h"}, ensure_ascii=False), file=sys.stderr)
+        raise SystemExit(2)
+
+
+def unknown_options(root, argv, extra):
+    """Name the command that was given an option it does not take, and its closest real options."""
+    import difflib
+    current = root
+    for word in argv:
+        nested = next((a for a in current._actions if isinstance(a, argparse._SubParsersAction)), None)
+        if nested and word in nested.choices:
+            current = nested.choices[word]
+    known = sorted({name for action in current._actions for name in action.option_strings if name.startswith("--")})
+    message = "Unrecognised arguments for " + current.prog + ": " + " ".join(extra)
+    for word in extra:
+        close = difflib.get_close_matches(word.split("=")[0], known, n=2, cutoff=.6) if word.startswith("-") else []
+        if close:
+            message += ". Did you mean " + " or ".join(close) + "?"
+            break
+    return {"error": message, "help": current.prog + " -h"}
+
+
 def parser():
     timeout_help = "Seconds allowed for the whole send, at most %d. A send that runs out before submission is rejected and safe to retry" % SEND_TIMEOUT_MAX
     common = argparse.ArgumentParser(add_help=False)
     style = common.add_mutually_exclusive_group()
     for flag in ("json", "plain", "tsv"):
         style.add_argument("--" + flag, action="store_true", default=argparse.SUPPRESS)
-    p = argparse.ArgumentParser(prog="amail", description="Fast email reads and verified, paced sending.", parents=[common], allow_abbrev=False)
+    suggest = {"suggest_on_error": True} if sys.version_info >= (3, 14) else {}  # a mistyped command names its neighbour
+    p = Parser(prog="amail", description="Fast email reads and verified, paced sending.", parents=[common], allow_abbrev=False, **suggest)
     p.add_argument("--version", action="version", version="amail 0.4.4")
     sub = p.add_subparsers(dest="command", required=True)
     descriptions = {
@@ -62,7 +92,7 @@ def parser():
         kwargs.setdefault("help", descriptions.get(name))
         kwargs.setdefault("description", descriptions.get(name))
         kwargs.setdefault("allow_abbrev", False)
-        result = sub.add_parser(name, parents=[common], formatter_class=argparse.ArgumentDefaultsHelpFormatter, **kwargs)
+        result = sub.add_parser(name, parents=[common], formatter_class=argparse.ArgumentDefaultsHelpFormatter, **suggest, **kwargs)
         if name in {"list", "search", "read", "thread"}:
             result.add_argument("--fields", help="Comma-separated message fields; list/search retain scope metadata")
         return result
@@ -445,7 +475,11 @@ def output(value, args):
 
 
 def main():
-    args = parser().parse_args()
+    root = parser()
+    args, extra = root.parse_known_args()
+    if extra:
+        print(json.dumps(unknown_options(root, sys.argv[1:], extra), ensure_ascii=False), file=sys.stderr)
+        raise SystemExit(2)
     from configuration import state_path, config_path, load, apply, setup
     state = state_path()
     try:
