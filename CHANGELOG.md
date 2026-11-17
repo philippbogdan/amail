@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.0
+
+- Send in the background. The reviewed text now goes into the compose window through the editor's accessibility text operation: Mail stays behind whatever is in front, nothing is typed and the clipboard is not touched. Only attachments are still pasted, which brings Mail forward for under a second, and amail then hands the keyboard back to the application that had it. An editor that refuses the operation gets the text by paste as before. The result records `body_entry`.
+- Reply to and forward HTML-heavy mail. The quoted history of a newsletter puts tens of thousands of elements in the compose window (91,579 in one case), and every search for the editor walked them until it hit a bound of 500: "Mail compose accessibility tree exceeded its bound". Searches now stay out of the quoted history, and attachments are counted from the editor's text.
+- Give every sending command `--timeout`. `draft send`, `reply --send`, `forward --send`, `batch run` and `batch resume` had none. The default is 60 seconds instead of 30 and the maximum 300 instead of 120, for a Mac under load.
+- Settle earlier sends before refusing a new one. A send left `provider_acceptance_unverified`, or `submitting` by a process that died, blocked its account until someone ran `amail status`. A new send now runs that reconciliation itself, and only an outcome that is still unknown blocks the account.
+- Close what a failed send leaves behind. A window that was prepared but never submitted, because the deadline ran out first or Mail was too slow to show it, is now closed. Before, it stayed open with its saved draft, which is the compose window with a save prompt that a timed-out `draft send` left on a loaded Mac, and it blocked every retry with the same subject. If Mail will not close a window at all, the result carries `compose_window_left_open`, and `amail status REQUEST_ID` or a retry with `--retry-rejected` closes it.
+- Wait up to three seconds for the editor to take the keyboard before a paste, instead of checking once after 50 ms. A Mail brought forward on a busy Mac needs longer, and the single check rejected the send.
+- Report where a send's time went. `timings_ms` gives the compose, body, save, draft verification, draft settling, submission and acceptance stages.
+- Print usage errors as one JSON line on stderr like every other error, with the command, its `-h` and, for a mistyped option or command, the closest real one. Nested commands such as `draft send` and `batch run` now reject abbreviated options as the top-level ones do.
+- Clean up after a killed send and a finished batch. Scratch directories left in the state directory by a killed send, each holding that message's text, are removed before the next composition, and a finished batch no longer leaves its worker lock behind.
+
 ## 0.4.4
 
 - Restart Mail between messages before it hangs. Mail 16 leaves one worker thread blocked for good behind every compose window it opens, sent or not (its own Command-N included); around sixty exhaust its dispatch thread pool and Mail stops responding, which a long batch reached every time. amail counts the compose windows it opens per Mail process and, after 40, quits and reopens Mail before the next message when no compose window is open. With a window of yours open it waits, and past 55 it refuses with a message instead of risking the hang. The restart does not count against the message's timeout; the send result records `mail_restarted_after_composes`.

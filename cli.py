@@ -52,7 +52,7 @@ def parser():
         style.add_argument("--" + flag, action="store_true", default=argparse.SUPPRESS)
     suggest = {"suggest_on_error": True} if sys.version_info >= (3, 14) else {}  # a mistyped command names its neighbour
     p = Parser(prog="amail", description="Fast email reads and verified, paced sending.", parents=[common], allow_abbrev=False, **suggest)
-    p.add_argument("--version", action="version", version="amail 0.4.4")
+    p.add_argument("--version", action="version", version="amail 0.5.0")
     sub = p.add_subparsers(dest="command", required=True)
     descriptions = {
         "accounts": "List enabled accounts; --available discovers accounts without enabling them",
