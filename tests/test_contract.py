@@ -49,6 +49,67 @@ class ContractTests(unittest.TestCase):
                 self.assertEqual(backend.call_count, 0 if uncertain else 1)
                 self.assertEqual(retry['state'], 'outcome_unknown' if uncertain else 'accepted')
 
+    def test_a_compose_window_mail_would_not_close_is_reported_then_closed(self):
+        from mail_sender import status
+        state = self.base / 'left-open'
+        def refuse(store, request, verification, state, here, timeout, prepared=None, prepare_only=False):
+            request['compose_window_left_open'] = True  # as native_transport.discard records it
+            raise ProviderError('The saved Mail draft did not match', uncertain=False)
+        args = self.args(dry_run=False, request_id='left-open')
+        with patch('native_transport.submit', side_effect=refuse):
+            first = send(self.store, args, state, self.base)
+        self.assertEqual(first['state'], 'rejected')
+        self.assertTrue(first['compose_window_left_open'])
+        self.assertIn('amail status', first['compose_window_note'])
+        with patch('native_transport.close_stale_window', return_value=None):  # Mail still does not answer
+            self.assertTrue(status('left-open', state, self.store)['compose_window_left_open'])
+        with patch('native_transport.close_stale_window', return_value=1):
+            closed = status('left-open', state, self.store)
+        self.assertNotIn('compose_window_left_open', closed)
+        self.assertEqual(closed['closed_stale_windows'], 1)
+        with patch('native_transport.close_stale_window', side_effect=AssertionError('already closed')):
+            self.assertEqual(status('left-open', state, self.store)['state'], 'rejected')
+
+    def test_an_explicit_retry_first_closes_the_window_its_last_attempt_left(self):
+        state = self.base / 'left-open-retry'
+        events = []
+        def refuse(store, request, verification, state, here, timeout, prepared=None, prepare_only=False):
+            request['compose_window_left_open'] = True
+            raise ProviderError('The saved Mail draft did not match', uncertain=False)
+        def accept(*args, **kwargs):
+            events.append('submit')
+            return SUBMITTED
+        with patch('native_transport.submit', side_effect=refuse):
+            send(self.store, self.args(dry_run=False, request_id='left-open'), state, self.base)
+        with patch('native_transport.close_stale_window', side_effect=lambda *a: events.append('close') or 1), \
+                patch('native_transport.submit', side_effect=accept), patch('mail_sender.observed_acceptance', return_value=ACCEPTED):
+            retry = send(self.store, self.args(dry_run=False, request_id='left-open', retry_rejected=True), state, self.base)
+        self.assertEqual(events, ['close', 'submit'])
+        self.assertEqual(retry['state'], 'accepted')
+        self.assertNotIn('compose_window_left_open', retry)
+
+    def test_a_new_send_first_settles_what_earlier_sends_left_open(self):
+        state = self.base / 'reconcile'
+        with patch('native_transport.submit', return_value=SUBMITTED), patch('mail_sender.observed_acceptance', return_value=None):
+            first = send(self.store, self.args(dry_run=False, request_id='slow-sync', timeout=.1), state, self.base)
+        self.assertEqual(first['state'], 'provider_acceptance_unverified')
+        second = self.args(dry_run=False, request_id='next', subject='Next')
+        with patch('native_transport.submit', side_effect=AssertionError('sent past an unknown outcome')), patch('mail_sender.observed_acceptance', return_value=None):
+            with self.assertRaises(MailError):  # still unknown: the account stays blocked
+                send(self.store, second, state, self.base)
+        with patch('native_transport.submit', return_value=SUBMITTED) as backend, patch('mail_sender.observed_acceptance', return_value=ACCEPTED):
+            result = send(self.store, second, state, self.base)  # the Sent copy has synced since
+        self.assertEqual(result['state'], 'accepted')
+        self.assertEqual(backend.call_count, 1)
+        from mail_sender import status
+        self.assertEqual(status('slow-sync', state, self.store)['state'], 'accepted')
+
+    def test_timeout_is_bounded(self):
+        for timeout in (0, 301):
+            with self.assertRaises(MailError):
+                send(self.store, self.args(timeout=timeout), self.base / 'state', self.base)
+        self.assertEqual(send(self.store, self.args(timeout=300), self.base / 'state', self.base)['state'], 'dry_run')
+
     def test_recipient_filter_and_cursor(self):
         self.assertEqual(len(self.store.query(recipient='owner@example.com')),1)
         self.assertEqual(self.store.query(recipient='external.example'),[])

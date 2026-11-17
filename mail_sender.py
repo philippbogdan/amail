@@ -13,7 +13,12 @@ import tempfile
 import time
 import uuid
 from urllib.parse import urlsplit
+from configuration import SEND_TIMEOUT_MAX
 from local_store import MailError, parse_emlx, wire_body
+
+
+WINDOW_LEFT = ("Mail did not close the unsent compose window. amail status REQUEST_ID, or a retry with --retry-rejected, "
+               "closes it")
 
 
 def normal_body(body):
@@ -122,8 +127,8 @@ def prepare(store,args,state=None,here=None):
         raise MailError("Body is empty; give the message some text")
     if not args.to:
         raise MailError("At least one recipient is required; replies and forwards also take explicit recipients")
-    if not 0 < args.timeout <= 120:
-        raise MailError("timeout must be between 0 and 120 seconds")
+    if not 0 < args.timeout <= SEND_TIMEOUT_MAX:
+        raise MailError(f"timeout must be between 0 and {SEND_TIMEOUT_MAX} seconds")
     if args.cap is not None and args.cap < 1:
         raise MailError("cap must be a positive number of recipients")
     request={"sender":sender,"formatted_sender":email.utils.formataddr((args.name,sender)),"subject":args.subject,"body":body,
@@ -326,6 +331,9 @@ def send(store,args,state,here):
     now=time.time()
     verification["created"]=now
     purpose = getattr(args, "purpose", "personal")
+    if getattr(args, "retry_rejected", False):
+        close_left_window(state, request_id, store, here)
+    reconcile_pending(state, store, account["uuid"], request_id)
     with ledger(state) as c:
         c.execute("begin immediate")
         prior=c.execute("select * from sends where request_id=?",(request_id,)).fetchone()
@@ -395,6 +403,7 @@ def send(store,args,state,here):
                     if time.perf_counter()-started>=args.timeout:
                         break
                     time.sleep(.1)
+                request.setdefault("timings_ms", {})["acceptance"]=round((time.perf_counter()-started)*1000-result["submission_ms"])
             elif reply.get("stage")=="compose":
                 result["state"]="rejected"
             else:
@@ -406,6 +415,45 @@ def send(store,args,state,here):
     except (subprocess.TimeoutExpired,OSError,ValueError):
         result.update(state="outcome_unknown",error="Submission/verification interrupted; do not resend without reconciling")
     result["elapsed_ms"]=round((time.perf_counter()-started)*1000,1)
+    if request.get("timings_ms"):
+        result["timings_ms"]=request["timings_ms"]
+    if request.get("compose_window_left_open"):
+        result.update(compose_window_left_open=True, compose_window_note=WINDOW_LEFT)
+    update(state,request_id,result)
+    return result
+
+
+def reconcile_pending(state, store, account, request_id):
+    """Settle what earlier sends on this account left open, exactly as amail status would, before a new send is refused.
+
+    A send whose Sent copy has since synced becomes accepted and one whose
+    process died before Mail was asked to send becomes rejected. Anything
+    still unknown stays unknown and goes on blocking the account.
+    """
+    with ledger(state) as c:
+        pending=[row[0] for row in c.execute("select request_id from sends where account=? and request_id!=? and state in "
+                                             "('submitting','provider_acceptance_unverified','outcome_unknown')",(account,request_id))]
+    for earlier in pending:
+        try:
+            status(earlier,state,store)
+        except (MailError,OSError,sqlite3.Error):
+            pass
+
+
+def close_left_window(state, request_id, store, here=None):
+    """Close the compose window that a rejected attempt of this request could not close itself."""
+    with ledger(state) as c:
+        row=c.execute("select * from sends where request_id=?",(request_id,)).fetchone()
+    result=json.loads(row["result"]) if row else {}
+    if not row or row["state"]!="rejected" or not result.get("compose_window_left_open"):
+        return None
+    from native_transport import close_stale_window
+    closed=close_stale_window(json.loads(row["verification"]), state, here or Path(__file__).resolve().parent, store)
+    if closed is None:
+        return None  # Mail still does not answer, so the note stays
+    result.pop("compose_window_left_open")
+    result.pop("compose_window_note", None)
+    result["closed_stale_windows"]=closed
     update(state,request_id,result)
     return result
 
@@ -469,4 +517,6 @@ def status(request_id,state,store):
             elif result["state"] == "submitting":
                 result.update(state="outcome_unknown", error="The submitting process exited; do not resend without reconciliation")
             update(state,request_id,result)
+    elif result.get("compose_window_left_open"):
+        result=close_left_window(state,request_id,store) or result
     return describe(row,state,store,result)

@@ -9,12 +9,14 @@ import sqlite3
 import subprocess
 import sys
 import time
+from configuration import SEND_TIMEOUT, SEND_TIMEOUT_MAX
 from local_store import Store, MailError, message_text, attachment_parts, body_available
 
 HERE = Path(__file__).resolve().parent
 
 
 def parser():
+    timeout_help = "Seconds allowed for the whole send, at most %d. A send that runs out before submission is rejected and safe to retry" % SEND_TIMEOUT_MAX
     common = argparse.ArgumentParser(add_help=False)
     style = common.add_mutually_exclusive_group()
     for flag in ("json", "plain", "tsv"):
@@ -113,7 +115,7 @@ def parser():
     body = send.add_mutually_exclusive_group(); body.add_argument("--body"); body.add_argument("--body-file")
     send.add_argument("--attach", nargs="*", default=[]); send.add_argument("--name", default=None)
     send.add_argument("--dry-run", action="store_true"); send.add_argument("--request-id")
-    send.add_argument("--timeout", type=float, default=30)
+    send.add_argument("--timeout", type=float, default=SEND_TIMEOUT, help=timeout_help)
     send.add_argument("--cap", type=int, help="Optional stricter rolling recipient cap")
     send.add_argument("--purpose", choices=["personal", "outreach"], default="personal")
     send.add_argument("--retry-rejected", action="store_true", help="Explicitly retry a definitively rejected request; never an ambiguous one")
@@ -132,6 +134,7 @@ def parser():
         q = command(name); q.add_argument("ref"); q.add_argument("--from", dest="sender")
         body = q.add_mutually_exclusive_group(); body.add_argument("--body"); body.add_argument("--body-file")
         q.add_argument("--send", action="store_true")
+        q.add_argument("--timeout", type=float, default=SEND_TIMEOUT, help=timeout_help + " (with --send)")
         if name == "reply": q.add_argument("--all", action="store_true")
         else: q.add_argument("--to", nargs="+", required=True)
     draft = command("draft"); ds = draft.add_subparsers(dest="action", required=True)
@@ -142,6 +145,7 @@ def parser():
         if name == "send":
             q.add_argument("--dry-run", action="store_true")
             q.add_argument("--retry-rejected", action="store_true", help="Retry this unchanged draft only after a confirmed rejection; never resend an unknown outcome")
+            q.add_argument("--timeout", type=float, default=SEND_TIMEOUT, help=timeout_help)
     batch = command("batch"); bs = batch.add_subparsers(dest="action", required=True)
     for name in ("plan", "show", "run", "status", "pause", "resume", "cancel", "export"):
         description = {"plan": "Freeze a JSONL manifest without sending; use amail schema batch for the complete input contract",
@@ -157,6 +161,7 @@ def parser():
             q.add_argument("file", help="JSONL: one complete message per line with a stable id. Run amail schema batch for fields and an example."); q.add_argument("--policy", choices=["outreach"], default="outreach")
         else: q.add_argument("id")
         if name == "status": q.add_argument("--details", action="store_true", help="Include every item and its provider result")
+        if name in {"run", "resume"}: q.add_argument("--timeout", type=float, default=SEND_TIMEOUT, help=timeout_help.replace("the whole send", "each message"))
         if name == "export": q.add_argument("--out", required=True)
     policy = command("policy"); ps = policy.add_subparsers(dest="action", required=True)
     q = ps.add_parser("show", parents=[common]); q.add_argument("name", nargs="?", default="outreach", choices=["outreach", "gmail", "exchange", "imperial"])
@@ -199,7 +204,7 @@ def conversation_draft(args, store, state, here):
         message = {"from": sender, "to": args.to, "subject": subject, "body": intro, "forward_ref": args.ref}
     draft = draft_create(store, state, message, Path.cwd())
     if args.send:
-        return send(store, arguments(draft["message"], request_id=draft["id"] + "-1"), state, here)
+        return send(store, arguments(draft["message"], request_id=draft["id"] + "-1", timeout=args.timeout), state, here)
     return draft
 
 
@@ -313,7 +318,7 @@ def run(args, store, state, here=HERE):
                 initialise(c)
                 return [dict(r) for r in c.execute("select id,revision,created from drafts order by created desc")]
         draft = draft_get(state, args.id)
-        send_args = arguments(draft["message"], request_id=f'{args.id}-{draft["revision"]}', dry_run=args.dry_run)
+        send_args = arguments(draft["message"], request_id=f'{args.id}-{draft["revision"]}', dry_run=args.dry_run, timeout=args.timeout)
         send_args.retry_rejected = args.retry_rejected
         return send(store, send_args, state, here)
     if command == "batch":
@@ -323,7 +328,7 @@ def run(args, store, state, here=HERE):
             from workflows import batch_summary
             return batch_summary(state, args.id)
         if args.action in {"show", "status"}: return batch_show(state, args.id, include_messages=args.action == "show")
-        if args.action in {"run", "resume"}: return batch_run(store, state, here, args.id, resume=args.action == "resume")
+        if args.action in {"run", "resume"}: return batch_run(store, state, here, args.id, resume=args.action == "resume", timeout=args.timeout)
         if args.action in {"pause", "cancel"}: return batch_control(state, args.id, args.action)
         plan = batch_show(state, args.id)
         with open(args.out, "x") as f: json.dump(plan, f, indent=2, ensure_ascii=False)

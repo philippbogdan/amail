@@ -201,6 +201,13 @@ assert.deepEqual(marks,[1]);
             with self.assertRaises(SystemExit) as result: main()
         self.assertEqual(result.exception.code, 2)
 
+    def test_every_sending_command_takes_a_timeout(self):
+        for argv in (['send', '--from', 'owner@example.com', '--to', 'person@example.net', '--subject', 'Hi'], ['draft', 'send', 'ID'],
+                     ['reply', 'REF', '--send'], ['forward', 'REF', '--to', 'person@example.net', '--send'], ['batch', 'run', 'ID'], ['batch', 'resume', 'ID']):
+            with self.subTest(command=argv[:2]):
+                self.assertEqual(parser().parse_args(argv).timeout, 60)
+                self.assertEqual(parser().parse_args(argv + ['--timeout', '240']).timeout, 240)
+
     def test_tsv_preserves_rows_and_scope_separately(self):
         import contextlib
         import io
