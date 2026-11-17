@@ -56,7 +56,7 @@ class ContractTests(unittest.TestCase):
         def refuse(store, request, verification, state, here, timeout, prepared=None, prepare_only=False):
             request.update(compose_window_left_open=True, compose_window=window)  # as native_transport records them
             raise ProviderError('The saved Mail draft did not match', uncertain=False)
-        args = self.args(dry_run=False, request_id='left-open')
+        args = self.args(dry_run=False, request_id='left-open', timeout=5)  # the fixture's 0.1 s can run out before submission
         with patch('native_transport.submit', side_effect=refuse):
             first = send(self.store, args, state, self.base)
         self.assertEqual(first['state'], 'rejected')
@@ -85,8 +85,8 @@ class ContractTests(unittest.TestCase):
                     events.append('submit')
                     return SUBMITTED
                 with patch('native_transport.submit', side_effect=refuse):
-                    send(self.store, self.args(dry_run=False, request_id='left-open'), state, self.base)
-                following = self.args(dry_run=False, request_id='left-open', retry_rejected=True) if retry else self.args(dry_run=False, request_id='another')
+                    send(self.store, self.args(dry_run=False, request_id='left-open', timeout=5), state, self.base)
+                following = self.args(dry_run=False, timeout=5, **({'request_id': 'left-open', 'retry_rejected': True} if retry else {'request_id': 'another'}))
                 with patch('native_transport.close_stale_window', side_effect=lambda *a: events.append('close') or 1), \
                         patch('native_transport.submit', side_effect=accept), patch('mail_sender.observed_acceptance', return_value=ACCEPTED):
                     result = send(self.store, following, state, self.base)
@@ -98,7 +98,7 @@ class ContractTests(unittest.TestCase):
         from mail_sender import status
         state = self.base / 'race'
         with patch('native_transport.submit', return_value=SUBMITTED), patch('mail_sender.observed_acceptance', return_value=None):
-            send(self.store, self.args(dry_run=False, request_id='slow', timeout=.1), state, self.base)
+            send(self.store, self.args(dry_run=False, request_id='slow', timeout=1), state, self.base)
         newer = {'request_id': 'slow', 'state': 'accepted', 'sent_ref': 'fixture:settled-elsewhere'}
         def meanwhile(store, verification):  # another process settles the request while this one is still asking Mail
             with ledger(state) as c, c:
@@ -113,9 +113,9 @@ class ContractTests(unittest.TestCase):
     def test_a_new_send_first_settles_what_earlier_sends_left_open(self):
         state = self.base / 'reconcile'
         with patch('native_transport.submit', return_value=SUBMITTED), patch('mail_sender.observed_acceptance', return_value=None):
-            first = send(self.store, self.args(dry_run=False, request_id='slow-sync', timeout=.1), state, self.base)
+            first = send(self.store, self.args(dry_run=False, request_id='slow-sync', timeout=1), state, self.base)
         self.assertEqual(first['state'], 'provider_acceptance_unverified')
-        second = self.args(dry_run=False, request_id='next', subject='Next')
+        second = self.args(dry_run=False, request_id='next', subject='Next', timeout=5)
         with patch('native_transport.submit', side_effect=AssertionError('sent past an unknown outcome')), patch('mail_sender.observed_acceptance', return_value=None):
             with self.assertRaises(MailError):  # still unknown: the account stays blocked
                 send(self.store, second, state, self.base)
