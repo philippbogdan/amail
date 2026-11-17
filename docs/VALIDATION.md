@@ -86,7 +86,7 @@ Every window discarded during this work, fourteen in all, had left its saved cop
 
 Two failures were then forced on live sends that could not go out. With the submission watch made to fail after the draft was prepared, the send was `rejected`, its window closed and its draft swept. With the body entry made to fail and the discard made to time out, the result carried `compose_window_left_open` with the window's id, the window stayed open, and `amail send-status` closed it.
 
-Not checked live: sends from Exchange (the account had another session's send awaiting reconciliation), and macOS versions before 27. An independent review of the branch found that a slow status check could overwrite a newer result, that stale windows were closed by subject alone, and that a held batch lock could be unlinked. All three are fixed here. 152 fixture tests pass.
+A last send, from the Exchange account to the maintainer's own Gmail with a 10.8 MB attachment, was accepted in 26.5 seconds, 12 of them waiting for the draft to settle. Not checked live: macOS versions before 27. An independent review of the branch found that a slow status check could overwrite a newer result, that stale windows were closed by subject alone, and that a held batch lock could be unlinked. All three are fixed here. 152 fixture tests pass.
 
 ## Public packaging checks
 
